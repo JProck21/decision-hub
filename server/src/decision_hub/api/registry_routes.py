@@ -225,7 +225,6 @@ async def publish_skill(
             llm_reasoning=llm_reasoning,
             quarantine_s3_key=q_key,
         )
-        conn.commit()
         raise HTTPException(
             status_code=422,
             detail=f"Gauntlet checks failed: {report.summary}",
@@ -273,8 +272,6 @@ async def publish_skill(
         version_id=version_record.id,
         llm_reasoning=llm_reasoning,
     )
-
-    conn.commit()
 
     return PublishResponse(
         skill_id=str(skill.id),
@@ -441,8 +438,6 @@ def delete_all_skill_versions(
     for s3_key in s3_keys:
         delete_skill_zip(s3_client, settings.s3_bucket, s3_key)
 
-    conn.commit()
-
     return DeleteAllResponse(
         org_slug=org_slug,
         skill_name=skill_name,
@@ -495,8 +490,6 @@ def delete_skill_version(
     # Remove the zip from S3
     s3_key = build_s3_key(org_slug, skill_name, version)
     delete_skill_zip(s3_client, settings.s3_bucket, s3_key)
-
-    conn.commit()
 
     return DeleteResponse(
         org_slug=org_slug,

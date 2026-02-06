@@ -78,7 +78,6 @@ def create_organisation(
 
     org = insert_organization(conn, body.slug, current_user.id)
     insert_org_member(conn, org.id, current_user.id, role="owner")
-    conn.commit()
 
     return CreateOrgResponse(id=str(org.id), slug=org.slug)
 
@@ -121,7 +120,6 @@ def invite_user(
         )
 
     invite = insert_org_invite(conn, org.id, body.github_username)
-    conn.commit()
 
     return InviteResponse(id=str(invite.id), status=invite.status)
 
@@ -158,6 +156,5 @@ def accept_user_invite(
 
     accept_invite(conn, invite.id)
     insert_org_member(conn, invite.org_id, current_user.id, role="member")
-    conn.commit()
 
     return AcceptInviteResponse(org_id=str(invite.org_id), role="member")

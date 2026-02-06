@@ -6,8 +6,8 @@ Implements the GitHub OAuth Device Flow for CLI-based authentication:
 3. Poll GitHub until the user authorizes or the flow expires.
 4. Fetch the authenticated user's profile with the access token.
 
-All HTTP requests use httpx with synchronous calls and explicit Accept headers
-for GitHub's JSON API responses.
+All HTTP requests use httpx.AsyncClient for non-blocking I/O within
+the FastAPI async event loop.
 """
 
 import httpx
@@ -21,7 +21,11 @@ GITHUB_USER_URL = "https://api.github.com/user"
 _ACCEPT_JSON = "application/json"
 
 
-def request_device_code(client_id: str) -> DeviceCodeResponse:
+class AuthorizationPending(Exception):
+    """Raised when the user has not yet completed GitHub authorization."""
+
+
+async def request_device_code(client_id: str) -> DeviceCodeResponse:
     """Request a device code from GitHub for the OAuth Device Flow.
 
     Initiates the device authorization flow by requesting a device code and
@@ -38,11 +42,12 @@ def request_device_code(client_id: str) -> DeviceCodeResponse:
     Raises:
         httpx.HTTPStatusError: If the GitHub API returns an error response.
     """
-    response = httpx.post(
-        GITHUB_DEVICE_CODE_URL,
-        data={"client_id": client_id},
-        headers={"Accept": _ACCEPT_JSON},
-    )
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            GITHUB_DEVICE_CODE_URL,
+            data={"client_id": client_id},
+            headers={"Accept": _ACCEPT_JSON},
+        )
     response.raise_for_status()
     data = response.json()
     return DeviceCodeResponse(
@@ -53,11 +58,7 @@ def request_device_code(client_id: str) -> DeviceCodeResponse:
     )
 
 
-class AuthorizationPending(Exception):
-    """Raised when the user has not yet completed GitHub authorization."""
-
-
-def poll_for_access_token(
+async def poll_for_access_token(
     client_id: str, device_code: str, interval: int = 5
 ) -> str:
     """Check GitHub once for an access token.
@@ -78,15 +79,16 @@ def poll_for_access_token(
         RuntimeError: If the user denies access or the device code expires.
         httpx.HTTPStatusError: If the GitHub API returns an unexpected error.
     """
-    response = httpx.post(
-        GITHUB_ACCESS_TOKEN_URL,
-        data={
-            "client_id": client_id,
-            "device_code": device_code,
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        },
-        headers={"Accept": _ACCEPT_JSON},
-    )
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            GITHUB_ACCESS_TOKEN_URL,
+            data={
+                "client_id": client_id,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+            headers={"Accept": _ACCEPT_JSON},
+        )
     response.raise_for_status()
     data = response.json()
 
@@ -109,7 +111,7 @@ def poll_for_access_token(
     )
 
 
-def get_github_user(access_token: str) -> dict:
+async def get_github_user(access_token: str) -> dict:
     """Fetch the authenticated user's GitHub profile.
 
     Args:
@@ -122,18 +124,19 @@ def get_github_user(access_token: str) -> dict:
     Raises:
         httpx.HTTPStatusError: If the GitHub API returns an error response.
     """
-    response = httpx.get(
-        GITHUB_USER_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": _ACCEPT_JSON,
-        },
-    )
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            GITHUB_USER_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": _ACCEPT_JSON,
+            },
+        )
     response.raise_for_status()
     return response.json()
 
 
-def check_org_membership(access_token: str, org: str, username: str) -> bool:
+async def check_org_membership(access_token: str, org: str, username: str) -> bool:
     """Check whether a GitHub user is a member of an organization.
 
     Uses the public org members endpoint which works without the read:org
@@ -148,22 +151,21 @@ def check_org_membership(access_token: str, org: str, username: str) -> bool:
     Returns:
         True if the user is a member of the organization.
     """
-    # Try authenticated endpoint first (sees private membership)
-    response = httpx.get(
-        f"https://api.github.com/orgs/{org}/members/{username}",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": _ACCEPT_JSON,
-        },
-    )
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.github.com/orgs/{org}/members/{username}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": _ACCEPT_JSON,
+            },
+        )
     if response.status_code == 204:
         return True
     if response.status_code == 404:
         return False
 
-    # If 403 (insufficient scope), fall back to public membership check
+    # 302 means requester is not an org member — can't see membership list
     if response.status_code == 302:
-        # 302 means requester is not an org member — can't see membership list
         return False
 
     return False

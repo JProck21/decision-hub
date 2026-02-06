@@ -58,7 +58,17 @@ def load_config() -> CliConfig:
         else:
             return CliConfig(api_url=default_api_url(env))
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        import typer
+        from rich.console import Console
+
+        Console(stderr=True).print(
+            f"[red]Error: Config file is corrupted: {path}\n"
+            f"Delete it and run [bold]dhub login[/bold] again.[/]"
+        )
+        raise typer.Exit(1)
     return CliConfig(
         api_url=raw.get("api_url", default_api_url()),
         token=raw.get("token"),

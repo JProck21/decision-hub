@@ -55,7 +55,6 @@ def store_key(
     """
     encrypted = encrypt_value(body.value, settings.fernet_key)
     key_record = insert_api_key(conn, current_user.id, body.key_name, encrypted)
-    conn.commit()
 
     return StoreKeyResponse(
         key_name=key_record.key_name,
@@ -92,4 +91,3 @@ def remove_key(
     deleted = delete_api_key(conn, current_user.id, key_name)
     if not deleted:
         raise HTTPException(status_code=404, detail="Key not found")
-    conn.commit()

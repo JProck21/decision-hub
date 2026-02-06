@@ -34,8 +34,12 @@ def get_s3_client(request: Request):  # noqa: ANN201 – boto3 client has no pub
 def get_connection(
     engine: Engine = Depends(get_engine),
 ) -> Generator[Connection, None, None]:
-    """Yield a database connection from the engine, closing it on teardown."""
-    with engine.connect() as conn:
+    """Yield a database connection inside a transaction.
+
+    Commits automatically on successful request completion.
+    Rolls back automatically if the request handler raises an exception.
+    """
+    with engine.begin() as conn:
         yield conn
 
 

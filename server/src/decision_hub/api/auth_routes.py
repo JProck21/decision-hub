@@ -1,5 +1,8 @@
 """Authentication routes – GitHub Device Flow login."""
 
+import logging
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
@@ -15,6 +18,8 @@ from decision_hub.infra.github import (
     request_device_code,
 )
 from decision_hub.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -48,7 +53,7 @@ class TokenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/github/code", response_model=DeviceCodeResponseSchema)
-def start_device_flow(
+async def start_device_flow(
     settings: Settings = Depends(get_settings),
 ) -> DeviceCodeResponseSchema:
     """Start GitHub Device Flow.
@@ -56,7 +61,7 @@ def start_device_flow(
     Returns a user_code for the user to enter at verification_uri, plus the
     device_code the client uses to poll for completion.
     """
-    result = request_device_code(settings.github_client_id)
+    result = await request_device_code(settings.github_client_id)
     return DeviceCodeResponseSchema(
         user_code=result.user_code,
         verification_uri=result.verification_uri,
@@ -66,7 +71,7 @@ def start_device_flow(
 
 
 @router.post("/github/token", response_model=TokenResponse)
-def exchange_token(
+async def exchange_token(
     body: TokenRequest,
     conn: Connection = Depends(get_connection),
     settings: Settings = Depends(get_settings),
@@ -77,15 +82,23 @@ def exchange_token(
     in the local database, and returns a signed JWT.
     """
     try:
-        gh_token = poll_for_access_token(settings.github_client_id, body.device_code)
+        gh_token = await poll_for_access_token(settings.github_client_id, body.device_code)
+        gh_user = await get_github_user(gh_token)
     except AuthorizationPending:
         raise HTTPException(status_code=428, detail="authorization_pending")
-
-    gh_user = get_github_user(gh_token)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("GitHub API returned %s: %s", exc.response.status_code, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub API error: {exc.response.status_code}",
+        )
+    except RuntimeError as exc:
+        logger.warning("GitHub device flow error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
 
     if settings.require_github_org:
         username = gh_user["login"]
-        if not check_org_membership(gh_token, settings.require_github_org, username):
+        if not await check_org_membership(gh_token, settings.require_github_org, username):
             raise HTTPException(
                 status_code=403,
                 detail=(
@@ -95,7 +108,6 @@ def exchange_token(
             )
 
     user = upsert_user(conn, str(gh_user["id"]), gh_user["login"])
-    conn.commit()
 
     jwt_token = create_jwt(
         str(user.id),
