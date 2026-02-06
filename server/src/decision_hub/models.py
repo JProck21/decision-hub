@@ -169,6 +169,7 @@ class AuditLogEntry:
     check_results: list[dict]
     llm_reasoning: dict | None
     publisher: str
+    quarantine_s3_key: str | None = None
     created_at: datetime | None = None
 
 

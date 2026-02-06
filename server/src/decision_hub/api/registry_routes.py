@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from decision_hub.api.deps import get_connection, get_current_user, get_s3_client, get_settings
 from decision_hub.domain.evals import run_static_checks
 from decision_hub.domain.publish import (
+    build_quarantine_s3_key,
     build_s3_key,
     extract_for_evaluation,
     validate_semver,
@@ -109,6 +110,7 @@ class AuditLogResponse(BaseModel):
     check_results: list[dict]
     llm_reasoning: dict | None
     publisher: str
+    quarantine_s3_key: str | None
     created_at: str | None
 
 
@@ -207,7 +209,10 @@ async def publish_skill(
     } or None
 
     if not report.passed:
-        # Grade F: insert audit log with no version_id, then reject
+        # Grade F: quarantine the zip in S3 for forensic inspection
+        q_key = build_quarantine_s3_key(org_slug, skill_name, version)
+        upload_skill_zip(s3_client, settings.s3_bucket, q_key, file_bytes)
+
         insert_audit_log(
             conn,
             org_slug=org_slug,
@@ -218,6 +223,7 @@ async def publish_skill(
             publisher=current_user.username,
             version_id=None,
             llm_reasoning=llm_reasoning,
+            quarantine_s3_key=q_key,
         )
         conn.commit()
         raise HTTPException(
@@ -388,6 +394,7 @@ def get_audit_log(
             check_results=entry.check_results,
             llm_reasoning=entry.llm_reasoning,
             publisher=entry.publisher,
+            quarantine_s3_key=entry.quarantine_s3_key,
             created_at=entry.created_at.isoformat() if entry.created_at else None,
         )
         for entry in entries

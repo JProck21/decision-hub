@@ -207,6 +207,7 @@ eval_audit_logs_table = Table(
     Column("check_results", JSONB, nullable=False),
     Column("llm_reasoning", JSONB, nullable=True),
     Column("publisher", String, nullable=False, server_default=""),
+    Column("quarantine_s3_key", Text, nullable=True),
     Column(
         "created_at",
         DateTime(timezone=True),
@@ -1058,6 +1059,7 @@ def _row_to_audit_log_entry(row: sa.Row) -> AuditLogEntry:
         check_results=row.check_results,
         llm_reasoning=row.llm_reasoning,
         publisher=row.publisher,
+        quarantine_s3_key=row.quarantine_s3_key,
         created_at=row.created_at,
     )
 
@@ -1072,6 +1074,7 @@ def insert_audit_log(
     publisher: str,
     version_id: UUID | None = None,
     llm_reasoning: dict | None = None,
+    quarantine_s3_key: str | None = None,
 ) -> AuditLogEntry:
     """Insert a gauntlet evaluation audit log entry.
 
@@ -1087,6 +1090,7 @@ def insert_audit_log(
         publisher: GitHub username of the publisher.
         version_id: UUID of the version record (None for F-rejected).
         llm_reasoning: Raw LLM judge responses.
+        quarantine_s3_key: S3 key for quarantined rejected packages.
 
     Returns:
         The newly created AuditLogEntry.
@@ -1103,6 +1107,8 @@ def insert_audit_log(
         values["version_id"] = version_id
     if llm_reasoning is not None:
         values["llm_reasoning"] = llm_reasoning
+    if quarantine_s3_key is not None:
+        values["quarantine_s3_key"] = quarantine_s3_key
 
     stmt = (
         sa.insert(eval_audit_logs_table)

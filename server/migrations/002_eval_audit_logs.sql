@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS eval_audit_logs (
     check_results JSONB NOT NULL,
     llm_reasoning JSONB,
     publisher TEXT NOT NULL DEFAULT '',
+    quarantine_s3_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_audit_logs_skill ON eval_audit_logs (org_slug, skill_name);

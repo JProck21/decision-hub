@@ -43,6 +43,18 @@ def build_s3_key(org_slug: str, skill_name: str, version: str) -> str:
     return f"skills/{org_slug}/{skill_name}/{version}.zip"
 
 
+def build_quarantine_s3_key(org_slug: str, skill_name: str, version: str) -> str:
+    """Build the S3 object key for a rejected skill stored in quarantine.
+
+    Rejected (Grade F) packages are stored under a 'rejected/' prefix
+    for forensic inspection while kept separate from published skills.
+
+    Returns:
+        S3 key in the format 'rejected/{org}/{name}/{version}.zip'.
+    """
+    return f"rejected/{org_slug}/{skill_name}/{version}.zip"
+
+
 def extract_for_evaluation(
     zip_bytes: bytes,
 ) -> tuple[str, list[tuple[str, str]], str | None]:

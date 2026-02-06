@@ -317,12 +317,14 @@ class TestPublishSkill:
     @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
+    @patch("decision_hub.api.registry_routes.upload_skill_zip")
     @patch("decision_hub.api.registry_routes.find_org_member")
     @patch("decision_hub.api.registry_routes.find_org_by_slug")
     def test_publish_gauntlet_blocks_dangerous_skill(
         self,
         mock_find_org: MagicMock,
         mock_find_member: MagicMock,
+        mock_upload: MagicMock,
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
@@ -343,22 +345,29 @@ class TestPublishSkill:
 
         assert resp.status_code == 422
         assert "Gauntlet checks failed" in resp.json()["detail"]
+        # Rejected zip uploaded to quarantine in S3
+        mock_upload.assert_called_once()
+        s3_key = mock_upload.call_args[0][2]
+        assert s3_key.startswith("rejected/")
         # Audit log should still be inserted for F-grade rejections
         mock_insert_audit.assert_called_once()
         call_kwargs = mock_insert_audit.call_args
         assert call_kwargs.kwargs.get("grade") == "F" or (
             len(call_kwargs.args) > 4 and call_kwargs.args[4] == "F"
         )
+        assert call_kwargs.kwargs.get("quarantine_s3_key") == s3_key
 
     @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
+    @patch("decision_hub.api.registry_routes.upload_skill_zip")
     @patch("decision_hub.api.registry_routes.find_org_member")
     @patch("decision_hub.api.registry_routes.find_org_by_slug")
     def test_publish_gauntlet_blocks_suspicious_code(
         self,
         mock_find_org: MagicMock,
         mock_find_member: MagicMock,
+        mock_upload: MagicMock,
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
@@ -382,6 +391,9 @@ class TestPublishSkill:
 
         assert resp.status_code == 422
         assert "Gauntlet checks failed" in resp.json()["detail"]
+        # Rejected zip uploaded to quarantine
+        mock_upload.assert_called_once()
+        assert mock_upload.call_args[0][2].startswith("rejected/")
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +561,7 @@ class TestGetAuditLog:
             check_results=[{"check_name": "manifest_schema", "severity": "pass", "message": "ok"}],
             llm_reasoning=None,
             publisher="testuser",
+            quarantine_s3_key=None,
             created_at=datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
         mock_find.return_value = [entry]
