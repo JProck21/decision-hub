@@ -14,11 +14,12 @@ console = Console()
 
 
 def publish_command(
-    path: Path = typer.Argument(
-        Path("."), help="Path to the skill directory"
+    skill_ref: str = typer.Argument(
+        None, help="Skill name (e.g. 'myorg/my-skill')"
     ),
-    org: str = typer.Option(..., "--org", help="Organization slug"),
-    name: str = typer.Option(..., "--name", help="Skill name"),
+    path: Path = typer.Argument(
+        None, help="Path to the skill directory (default: current dir)"
+    ),
     version: str = typer.Option(None, "--version", help="Explicit semver version (overrides auto-bump)"),
     patch: bool = typer.Option(False, "--patch", help="Bump patch version"),
     minor: bool = typer.Option(False, "--minor", help="Bump minor version"),
@@ -26,10 +27,14 @@ def publish_command(
 ) -> None:
     """Publish a skill to the registry.
 
+    When ORG/SKILL is omitted, the skill name is read from SKILL.md and the
+    org is auto-detected (requires membership in exactly one org).
+
     Version is auto-bumped by default (patch). Use --major or --minor to
     control the bump level, or --version to set an explicit version.
     """
-    from dhub.cli.config import get_api_url, get_token
+    from dhub.cli.config import build_headers, get_api_url, get_token
+    from dhub.core.manifest import parse_skill_md
     from dhub.core.validation import (
         FIRST_VERSION,
         bump_version,
@@ -37,10 +42,54 @@ def publish_command(
         validate_skill_name,
     )
 
-    validate_skill_name(name)
+    # Disambiguate positional args: if skill_ref looks like a filesystem path
+    # (starts with '.', '/', '~', or is an existing directory) rather than
+    # an org/skill pattern, treat it as the path argument instead.
+    if skill_ref is not None and path is None:
+        candidate = Path(skill_ref)
+        if skill_ref.startswith((".", "/", "~")) or candidate.is_dir():
+            path = candidate
+            skill_ref = None
+
+    # Default path to current directory
+    if path is None:
+        path = Path(".")
+
+    # Verify the directory contains a SKILL.md manifest (needed for both auto-detect and validation)
+    skill_md_path = path / "SKILL.md"
+    if not skill_md_path.exists():
+        console.print(
+            "[red]Error: SKILL.md not found in the specified directory.[/]"
+        )
+        raise typer.Exit(1)
 
     api_url = get_api_url()
     token = get_token()
+
+    manifest = parse_skill_md(skill_md_path)
+
+    # Resolve org and name from skill_ref or auto-detect
+    if skill_ref is not None:
+        parts = skill_ref.split("/", 1)
+        if len(parts) != 2:
+            console.print(
+                "[red]Error: Skill reference must be in org/skill format.[/]"
+            )
+            raise typer.Exit(1)
+        org, name = parts
+        # Warn if the CLI-provided name doesn't match SKILL.md
+        if name != manifest.name:
+            console.print(
+                f"[yellow]Warning: CLI name '{name}' differs from SKILL.md "
+                f"name '{manifest.name}'. Using '{name}'.[/]"
+            )
+    else:
+        # Auto-detect name from SKILL.md
+        name = manifest.name
+        # Auto-detect org: user must belong to exactly one org
+        org = _auto_detect_org(api_url, token)
+
+    validate_skill_name(name)
 
     # Resolve version: explicit --version wins, otherwise auto-bump
     if version is not None:
@@ -48,14 +97,6 @@ def publish_command(
     else:
         bump_level = _resolve_bump_level(patch, minor, major)
         version = _auto_bump_version(api_url, token, org, name, bump_level, bump_version, FIRST_VERSION)
-
-    # Verify the directory contains a SKILL.md manifest
-    skill_md = path / "SKILL.md"
-    if not skill_md.exists():
-        console.print(
-            "[red]Error: SKILL.md not found in the specified directory.[/]"
-        )
-        raise typer.Exit(1)
 
     console.print(f"Packaging skill from [cyan]{path.resolve()}[/]...")
     zip_data = _create_zip(path)
@@ -68,7 +109,7 @@ def publish_command(
     with httpx.Client(timeout=60) as client:
         resp = client.post(
             f"{api_url}/v1/publish",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=build_headers(token),
             files={"zip_file": ("skill.zip", zip_data, "application/zip")},
             data={"metadata": metadata},
         )
@@ -108,6 +149,42 @@ def publish_command(
         )
 
 
+def _auto_detect_org(api_url: str, token: str) -> str:
+    """Auto-detect the org when the user belongs to exactly one.
+
+    Fetches the user's org list from the API. If they belong to exactly
+    one org, returns its slug. Otherwise, prints an error and exits.
+    """
+    from dhub.cli.config import build_headers
+
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(
+            f"{api_url}/v1/orgs",
+            headers=build_headers(token),
+        )
+        resp.raise_for_status()
+        orgs = resp.json()
+
+    if len(orgs) == 0:
+        console.print(
+            "[red]Error: No namespaces available. "
+            "Run 'dhub login' to refresh your org memberships.[/]"
+        )
+        raise typer.Exit(1)
+
+    if len(orgs) > 1:
+        slugs = ", ".join(o["slug"] for o in orgs)
+        console.print(
+            f"[red]Error: You have multiple namespaces ({slugs}). "
+            f"Please specify which one: dhub publish <org>/<skill>[/]"
+        )
+        raise typer.Exit(1)
+
+    org_slug = orgs[0]["slug"]
+    console.print(f"Auto-detected namespace: [cyan]{org_slug}[/]")
+    return org_slug
+
+
 def _resolve_bump_level(patch: bool, minor: bool, major: bool) -> str:
     """Determine bump level from CLI flags. Default is 'patch'."""
     flags = sum([patch, minor, major])
@@ -131,10 +208,12 @@ def _auto_bump_version(
     first_version: str,
 ) -> str:
     """Fetch the latest version from the registry and auto-bump it."""
+    from dhub.cli.config import build_headers
+
     with httpx.Client(timeout=30) as client:
         resp = client.get(
             f"{api_url}/v1/skills/{org}/{name}/latest-version",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=build_headers(token),
         )
 
     if resp.status_code == 404:
@@ -177,14 +256,14 @@ def _create_zip(path: Path) -> bytes:
 
 def list_command() -> None:
     """List all published skills on the registry."""
-    from dhub.cli.config import get_api_url, get_token
+    from dhub.cli.config import build_headers, get_api_url, get_token
 
     api_url = get_api_url()
 
     with httpx.Client(timeout=30) as client:
         resp = client.get(
             f"{api_url}/v1/skills",
-            headers={"Authorization": f"Bearer {get_token()}"},
+            headers=build_headers(get_token()),
         )
         resp.raise_for_status()
         skills = resp.json()
@@ -222,11 +301,11 @@ def list_command() -> None:
 
 
 def delete_command(
-    skill_ref: str = typer.Argument(help="Skill reference: org/skill"),
+    skill_ref: str = typer.Argument(help="Skill name (e.g. 'myorg/my-skill')"),
     version: str = typer.Option(None, "--version", "-v", help="Version to delete (omit to delete all)"),
 ) -> None:
     """Delete a published skill version (or all versions) from the registry."""
-    from dhub.cli.config import get_api_url, get_token
+    from dhub.cli.config import build_headers, get_api_url, get_token
 
     parts = skill_ref.split("/", 1)
     if len(parts) != 2:
@@ -237,7 +316,7 @@ def delete_command(
     org_slug, skill_name = parts
 
     api_url = get_api_url()
-    headers = {"Authorization": f"Bearer {get_token()}"}
+    headers = build_headers(get_token())
 
     if version is None:
         # Delete ALL versions
@@ -292,7 +371,7 @@ def delete_command(
 
 
 def install_command(
-    skill_ref: str = typer.Argument(help="Skill reference: org/skill"),
+    skill_ref: str = typer.Argument(help="Skill name (e.g. 'myorg/my-skill')"),
     version: str = typer.Option(
         "latest", "--version", "-v", help="Version spec"
     ),
@@ -304,7 +383,7 @@ def install_command(
     ),
 ) -> None:
     """Install a skill from the registry."""
-    from dhub.cli.config import get_api_url, get_token
+    from dhub.cli.config import build_headers, get_api_url, get_token
     from dhub.core.install import (
         get_dhub_skill_path,
         link_skill_to_agent,
@@ -321,7 +400,7 @@ def install_command(
         raise typer.Exit(1)
     org_slug, skill_name = parts
 
-    headers = {"Authorization": f"Bearer {get_token()}"}
+    headers = build_headers(get_token())
     base_url = get_api_url()
 
     # Resolve the version to a concrete download URL and checksum

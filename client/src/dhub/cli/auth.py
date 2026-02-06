@@ -14,13 +14,13 @@ def login_command(
     api_url: str = typer.Option(None, "--api-url", help="API URL override"),
 ) -> None:
     """Authenticate with Decision Hub via GitHub."""
-    from dhub.cli.config import CliConfig, get_api_url, save_config
+    from dhub.cli.config import CliConfig, build_headers, get_api_url, save_config
 
     base_url = api_url or get_api_url()
 
     # Step 1: Request a device code from the API
     with httpx.Client() as client:
-        resp = client.post(f"{base_url}/auth/github/code")
+        resp = client.post(f"{base_url}/auth/github/code", headers=build_headers())
         resp.raise_for_status()
         data = resp.json()
 
@@ -84,11 +84,14 @@ def _poll_for_token(
     """
     deadline = time.monotonic() + timeout_seconds
 
+    from dhub.cli.config import build_headers
+
     with httpx.Client(timeout=30) as client:
         while time.monotonic() < deadline:
             resp = client.post(
                 f"{base_url}/auth/github/token",
                 json={"device_code": device_code},
+                headers=build_headers(),
             )
 
             if resp.status_code == 200:

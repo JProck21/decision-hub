@@ -9,25 +9,13 @@ console = Console()
 keys_app = typer.Typer(help="Manage API keys for agent evals", no_args_is_help=True)
 
 
-def _headers() -> dict[str, str]:
-    """Build authorization headers using the stored token."""
-    from dhub.cli.config import get_token
-
-    return {"Authorization": f"Bearer {get_token()}"}
-
-
-def _api_url() -> str:
-    """Retrieve the configured API URL."""
-    from dhub.cli.config import get_api_url
-
-    return get_api_url()
-
-
 @keys_app.command("add")
 def add_key(
     key_name: str = typer.Argument(help="Name for the API key"),
 ) -> None:
     """Add an API key (prompts for the value securely)."""
+    from dhub.cli.config import build_headers, get_api_url, get_token
+
     key_value = typer.prompt("Enter API key value", hide_input=True)
 
     if not key_value.strip():
@@ -36,8 +24,8 @@ def add_key(
 
     with httpx.Client() as client:
         resp = client.post(
-            f"{_api_url()}/v1/keys",
-            headers=_headers(),
+            f"{get_api_url()}/v1/keys",
+            headers=build_headers(get_token()),
             json={"key_name": key_name, "value": key_value},
         )
         if resp.status_code == 409:
@@ -54,10 +42,12 @@ def add_key(
 @keys_app.command("list")
 def list_keys() -> None:
     """List stored API key names."""
+    from dhub.cli.config import build_headers, get_api_url, get_token
+
     with httpx.Client() as client:
         resp = client.get(
-            f"{_api_url()}/v1/keys",
-            headers=_headers(),
+            f"{get_api_url()}/v1/keys",
+            headers=build_headers(get_token()),
         )
         resp.raise_for_status()
         keys = resp.json()
@@ -81,10 +71,12 @@ def remove_key(
     key_name: str = typer.Argument(help="Name of the API key to remove"),
 ) -> None:
     """Remove a stored API key."""
+    from dhub.cli.config import build_headers, get_api_url, get_token
+
     with httpx.Client() as client:
         resp = client.delete(
-            f"{_api_url()}/v1/keys/{key_name}",
-            headers=_headers(),
+            f"{get_api_url()}/v1/keys/{key_name}",
+            headers=build_headers(get_token()),
         )
         if resp.status_code == 404:
             console.print(

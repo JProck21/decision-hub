@@ -5,12 +5,14 @@ from uuid import UUID
 
 import pytest
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from decision_hub.api.app import _parse_semver
 from decision_hub.api.auth_routes import router as auth_router
 from decision_hub.api.keys_routes import router as keys_router
-from decision_hub.api.org_routes import invite_router, org_router
+from decision_hub.api.org_routes import org_router
 from decision_hub.api.registry_routes import router as registry_router
 from decision_hub.domain.auth import create_jwt
 
@@ -27,6 +29,7 @@ def test_settings() -> MagicMock:
     settings.s3_bucket = "test-bucket"
     settings.google_api_key = ""
     settings.require_github_org = ""
+    settings.min_cli_version = ""
     return settings
 
 
@@ -39,9 +42,24 @@ def test_app(test_settings: MagicMock) -> FastAPI:
     app.state.engine = MagicMock()
     app.state.s3_client = MagicMock()
 
+    @app.middleware("http")
+    async def check_cli_version(request: Request, call_next):  # noqa: ANN001
+        """Reject requests from outdated CLI versions on /v1/ routes."""
+        if request.url.path.startswith("/v1/"):
+            min_ver = test_settings.min_cli_version
+            if min_ver:
+                client_ver = request.headers.get("X-DHub-Client-Version", "")
+                if not client_ver or _parse_semver(client_ver) < _parse_semver(min_ver):
+                    return JSONResponse(
+                        status_code=426,
+                        content={
+                            "detail": "Your CLI is outdated. Run 'pip install --upgrade dhub-cli' to update.",
+                        },
+                    )
+        return await call_next(request)
+
     app.include_router(auth_router)
     app.include_router(org_router)
-    app.include_router(invite_router)
     app.include_router(registry_router)
     app.include_router(keys_router)
 
@@ -63,6 +81,7 @@ def auth_headers(test_settings: MagicMock) -> dict[str, str]:
         secret=test_settings.jwt_secret,
         algorithm=test_settings.jwt_algorithm,
         expiry_hours=test_settings.jwt_expiry_hours,
+        github_orgs=["test-org"],
     )
     return {"Authorization": f"Bearer {token}"}
 

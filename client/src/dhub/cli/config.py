@@ -3,6 +3,7 @@
 import json
 import os
 from dataclasses import asdict, dataclass
+from importlib.metadata import version
 from pathlib import Path
 
 import typer
@@ -112,3 +113,21 @@ def get_token() -> str:
         )
         raise typer.Exit(1)
     return token
+
+
+def get_client_version() -> str:
+    """Return the installed dhub-cli package version."""
+    return version("dhub-cli")
+
+
+def build_headers(token: str | None = None) -> dict[str, str]:
+    """Build HTTP headers with the CLI version and optional auth token.
+
+    Every request to the server includes X-DHub-Client-Version so the
+    server can enforce a minimum CLI version. Authenticated requests
+    also include the Authorization bearer header.
+    """
+    headers: dict[str, str] = {"X-DHub-Client-Version": get_client_version()}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers

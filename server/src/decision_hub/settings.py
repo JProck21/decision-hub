@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # Leave empty to allow all authenticated GitHub users.
     require_github_org: str = ""
 
+    # Minimum CLI version allowed to call /v1/ endpoints.
+    # Empty string disables enforcement (backward-compatible rollout).
+    min_cli_version: str = ""
+
 
 def get_env() -> str:
     """Return current environment name from DHUB_ENV (default: 'prod')."""

@@ -70,10 +70,19 @@ def get_current_user(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Tokens issued before the org refactor lack the github_orgs claim.
+    # Prompt the user to re-authenticate so they get a fresh token.
+    if "github_orgs" not in payload:
+        raise HTTPException(
+            status_code=401,
+            detail="Your session is outdated. Run 'dhub login' to refresh.",
+        )
+
     # The JWT 'sub' claim holds the user id and 'username' holds the login.
     # We trust the signed token and avoid a DB lookup on every request.
     return User(
         id=UUID(payload["sub"]),
         github_id="",
         username=payload["username"],
+        github_orgs=tuple(payload["github_orgs"]),
     )
