@@ -35,12 +35,27 @@ DHUB_ENV=dev uv run --package decision-hub-server uvicorn ...  # local dev serve
 
 **Modal cold starts**: Modal containers spin down after inactivity. The first HTTP request after a cold start can take 30-60 seconds. Always use `timeout=60` (or higher) when making HTTP requests to Modal endpoints. Do NOT use default timeouts — they will fail on cold starts.
 
-## Database Migrations
+## Working Directory
 
-No `psql` available on this machine. Run migrations via Python + SQLAlchemy instead:
+**Always run server-package commands from `server/`**. The server's `.env.dev` / `.env.prod` files live in `server/` and `pydantic-settings` resolves them relative to the current working directory. Running from the repo root will fail with missing settings errors.
 
 ```bash
-DHUB_ENV=dev uv run --package decision-hub-server python -c "
+# Correct
+cd server && DHUB_ENV=dev uv run --package decision-hub-server python -c "..."
+cd server && DHUB_ENV=dev modal deploy modal_app.py
+
+# Wrong — .env.dev not found
+DHUB_ENV=dev uv run --package decision-hub-server python -c "..."
+```
+
+Client-package commands (`uv run --package dhub-cli ...`) can run from anywhere.
+
+## Database Migrations
+
+No `psql` available on this machine. Run migrations via Python + SQLAlchemy instead (from `server/`):
+
+```bash
+cd server && DHUB_ENV=dev uv run --package decision-hub-server python -c "
 from decision_hub.settings import create_settings
 from decision_hub.infra.database import create_engine, metadata
 settings = create_settings('dev')
