@@ -78,9 +78,34 @@ def publish_command(
                 f"{org}/{name}.[/]"
             )
             raise typer.Exit(1)
+        if resp.status_code == 422:
+            detail = resp.json().get("detail", "Gauntlet checks failed")
+            console.print(f"[red]Rejected (Grade F): {detail}[/]")
+            raise typer.Exit(1)
+        if resp.status_code == 503:
+            console.print(
+                "[red]Error: Server LLM judge not configured. "
+                "Cannot publish without LLM review.[/]"
+            )
+            raise typer.Exit(1)
         resp.raise_for_status()
 
-    console.print(f"[green]Published: {org}/{name}@{version}[/]")
+    data = resp.json()
+    eval_status = data.get("eval_status", "")
+
+    grade_colors = {"A": "green", "B": "yellow", "C": "red", "F": "red"}
+    grade_color = grade_colors.get(eval_status, "white")
+    console.print(
+        f"[green]Published: {org}/{name}@{version}[/] "
+        f"(Grade [{grade_color}]{eval_status}[/])"
+    )
+    if eval_status == "B":
+        console.print("[yellow]Warning: Grade B — elevated permissions detected.[/]")
+    elif eval_status == "C":
+        console.print(
+            "[red]Warning: Grade C — ambiguous patterns detected. "
+            "Users will need --allow-risky to install.[/]"
+        )
 
 
 def _resolve_bump_level(patch: bool, minor: bool, major: bool) -> str:
@@ -179,13 +204,16 @@ def list_command() -> None:
     table.add_column("Author")
     table.add_column("Description")
 
+    grade_styles = {"A": "green", "B": "yellow", "C": "dark_orange", "F": "red"}
     for s in skills:
+        rating = s.get("safety_rating", "")
+        rating_style = grade_styles.get(rating, "white")
         table.add_row(
             s["org_slug"],
             s["skill_name"],
             s["latest_version"],
             s.get("updated_at", ""),
-            s.get("safety_rating", ""),
+            f"[{rating_style}]{rating}[/]",
             s.get("author", ""),
             s.get("description", ""),
         )
@@ -271,6 +299,9 @@ def install_command(
     agent: str = typer.Option(
         None, "--agent", help="Target agent (claude, cursor, etc.) or 'all'"
     ),
+    allow_risky: bool = typer.Option(
+        False, "--allow-risky", help="Allow installing C-grade (risky) skills"
+    ),
 ) -> None:
     """Install a skill from the registry."""
     from dhub.cli.config import get_api_url, get_token
@@ -295,10 +326,13 @@ def install_command(
 
     # Resolve the version to a concrete download URL and checksum
     console.print(f"Resolving {org_slug}/{skill_name}@{version}...")
+    resolve_params: dict[str, str] = {"spec": version}
+    if allow_risky:
+        resolve_params["allow_risky"] = "true"
     with httpx.Client() as client:
         resp = client.get(
             f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
-            params={"spec": version},
+            params=resolve_params,
             headers=headers,
         )
         if resp.status_code == 404:

@@ -358,6 +358,58 @@ class TestInstallCommand:
         # Verify the zip was extracted
         assert skill_dir.exists()
 
+    @patch("dhub.core.install.verify_checksum")
+    @patch("dhub.core.install.get_dhub_skill_path")
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_install_with_allow_risky_flag(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+        mock_skill_path: MagicMock,
+        mock_checksum: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--allow-risky flag passes allow_risky=true to resolve request."""
+        skill_dir = tmp_path / "myorg" / "my-skill"
+        mock_skill_path.return_value = skill_dir
+
+        zip_bytes = _make_zip_bytes()
+
+        resolve_resp = _ok_response({
+            "version": "1.0.0",
+            "download_url": "http://test:8000/download/skill.zip",
+            "checksum": "abc123",
+        })
+        download_resp = MagicMock()
+        download_resp.status_code = 200
+        download_resp.content = zip_bytes
+        download_resp.raise_for_status = MagicMock()
+
+        mock_client_resolve = MagicMock()
+        mock_client_resolve.__enter__ = MagicMock(return_value=mock_client_resolve)
+        mock_client_resolve.__exit__ = MagicMock(return_value=False)
+        mock_client_resolve.get.return_value = resolve_resp
+
+        mock_client_download = MagicMock()
+        mock_client_download.__enter__ = MagicMock(return_value=mock_client_download)
+        mock_client_download.__exit__ = MagicMock(return_value=False)
+        mock_client_download.get.return_value = download_resp
+
+        mock_client_cls.side_effect = [mock_client_resolve, mock_client_download]
+
+        result = runner.invoke(
+            app, ["install", "myorg/my-skill", "--allow-risky"]
+        )
+
+        assert result.exit_code == 0
+        # Verify allow_risky was passed in the resolve request params
+        resolve_call = mock_client_resolve.get.call_args
+        params = resolve_call.kwargs.get("params", {})
+        assert params.get("allow_risky") == "true"
+
     def test_install_invalid_skill_ref(self) -> None:
         """Install should reject a skill reference without a slash."""
         result = runner.invoke(app, ["install", "no-slash"])

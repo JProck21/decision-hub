@@ -40,12 +40,13 @@ def build_index_entry(
 def format_trust_score(eval_status: str) -> str:
     """Map an evaluation status to a human-readable trust grade.
 
-    Grades:
-    - passed  -> "A" (trusted, all checks passed)
-    - pending -> "C" (unverified, awaiting evaluation)
-    - failed  -> "F" (untrusted, checks failed)
+    Handles both new A/B/C/F grades and legacy passed/pending/failed values.
     """
     scores = {
+        "A": "A",
+        "B": "B",
+        "C": "C",
+        "F": "F",
         "passed": "A",
         "pending": "C",
         "failed": "F",

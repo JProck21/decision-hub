@@ -29,6 +29,55 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(?i)(api[_-]?key|secret|password|token)\s*=\s*['\"][^'\"]{8,}", "hardcoded credential"),
 )
 
+# Prompt injection patterns for SKILL.md body scanning
+_PROMPT_INJECTION_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"(?i)ignore\s+(all\s+)?previous\s+instructions", "instruction override"),
+    (r"(?i)you\s+are\s+now\s+(a\s+)?new\s+(ai|assistant|system)", "role hijack"),
+    (r"(?i)forget\s+(everything|all|your\s+(instructions|rules))", "memory wipe"),
+    (r"[\u200b\u200c\u200d\u2060\ufeff]", "zero-width/invisible unicode"),
+    (r"(?i)(curl|wget|fetch)\s+https?://", "exfiltration URL"),
+    (r"(?i)send\s+(the\s+)?(data|output|result|content)\s+to\s+", "exfiltration instruction"),
+    (r"(?i)tool_call|function_call|<tool>|<function>", "tool escalation markup"),
+    (r"\\x[0-9a-f]{2}|\\u[0-9a-f]{4}", "escaped unicode sequences"),
+)
+
+# Permission categories that elevate a skill from A to B
+_ELEVATED_PERMISSION_PATTERNS: dict[str, list[str]] = {
+    "shell": [
+        r"\bsubprocess\b", r"\bos\.system\b", r"\bos\.popen\b",
+        r"\bshell\b", r"\bbash\b",
+    ],
+    "network": [
+        r"\bhttpx\b", r"\brequests\b", r"\burllib\b",
+        r"\bsocket\b", r"\baiohttp\b",
+    ],
+    "fs_write": [
+        r"\.write\s*\(", r"open\s*\(.*['\"]w",
+        r"\bshutil\b", r"\bos\.remove\b", r"\bos\.unlink\b",
+    ],
+    "env_var": [
+        r"\bos\.environ\b", r"\bos\.getenv\b",
+    ],
+}
+
+
+# Type alias for the LLM judge callback.
+# Accepts (source_snippets, skill_name, skill_description) -> list[dict]
+# Each returned dict has 'file', 'label', 'dangerous' (bool), 'reason'.
+AnalyzeFn = Callable[
+    [list[dict], str, str],
+    list[dict],
+]
+
+# Type alias for the prompt LLM judge callback.
+# Accepts (prompt_hits, skill_name, skill_description) -> list[dict]
+# Each returned dict has 'pattern', 'label', 'dangerous' (bool),
+# 'ambiguous' (bool), 'reason' (str).
+AnalyzePromptFn = Callable[
+    [list[dict], str, str],
+    list[dict],
+]
+
 
 def check_manifest_schema(content: str) -> EvalResult:
     """Validate that SKILL.md frontmatter contains required fields.
@@ -42,7 +91,7 @@ def check_manifest_schema(content: str) -> EvalResult:
     if has_name and has_desc:
         return EvalResult(
             check_name="manifest_schema",
-            passed=True,
+            severity="pass",
             message="SKILL.md contains required fields",
         )
     missing = []
@@ -52,7 +101,7 @@ def check_manifest_schema(content: str) -> EvalResult:
         missing.append("description")
     return EvalResult(
         check_name="manifest_schema",
-        passed=False,
+        severity="fail",
         message=f"SKILL.md missing required fields: {', '.join(missing)}",
     )
 
@@ -68,12 +117,12 @@ def check_dependency_audit(lockfile_content: str) -> EvalResult:
     if not found:
         return EvalResult(
             check_name="dependency_audit",
-            passed=True,
+            severity="pass",
             message="No blocked dependencies found",
         )
     return EvalResult(
         check_name="dependency_audit",
-        passed=False,
+        severity="fail",
         message=f"Blocked dependencies found: {', '.join(found)}",
     )
 
@@ -99,15 +148,6 @@ def _find_suspicious_lines(
     return hits
 
 
-# Type alias for the LLM judge callback.
-# Accepts (source_snippets, skill_name, skill_description) -> list[dict]
-# Each returned dict has 'file', 'label', 'dangerous' (bool), 'reason'.
-AnalyzeFn = Callable[
-    [list[dict], str, str],
-    list[dict],
-]
-
-
 def check_safety_scan(
     source_files: list[tuple[str, str]],
     skill_name: str = "",
@@ -120,22 +160,14 @@ def check_safety_scan(
     Stage 2 (if analyze_fn provided): an LLM decides which candidates
     are genuinely dangerous given the skill's stated purpose.
 
-    If no analyze_fn is provided, all regex hits are treated as failures
-    (strict mode, suitable for offline / test usage).
-
-    Args:
-        source_files: List of (filename, content) tuples.
-        skill_name: The skill's declared name (for LLM context).
-        skill_description: What the skill says it does (for LLM context).
-        analyze_fn: Optional LLM callback. Signature:
-            (snippets, skill_name, skill_description) -> list[dict].
+    Returns severity "pass", "warn" (ambiguous), or "fail" (dangerous).
     """
     hits = _find_suspicious_lines(source_files)
 
     if not hits:
         return EvalResult(
             check_name="safety_scan",
-            passed=True,
+            severity="pass",
             message="No suspicious patterns detected",
         )
 
@@ -143,36 +175,177 @@ def check_safety_scan(
     if analyze_fn is not None:
         judgments = analyze_fn(hits, skill_name, skill_description)
         dangerous = [j for j in judgments if j.get("dangerous", True)]
-        acknowledged = [j for j in judgments if not j.get("dangerous", True)]
+        ambiguous = [j for j in judgments if j.get("ambiguous", False) and not j.get("dangerous", True)]
+        acknowledged = [j for j in judgments if not j.get("dangerous", True) and not j.get("ambiguous", False)]
 
-        if not dangerous:
-            ack_summary = "; ".join(
-                f"{a['file']}: {a['label']} (ok: {a.get('reason', 'legitimate')})"
-                for a in acknowledged
+        if dangerous:
+            danger_summary = "; ".join(
+                f"{d['file']}: {d['label']} ({d.get('reason', 'flagged')})"
+                for d in dangerous
             )
             return EvalResult(
                 check_name="safety_scan",
-                passed=True,
-                message=f"All patterns reviewed and accepted: {ack_summary}",
+                severity="fail",
+                message=f"Dangerous patterns confirmed: {danger_summary}",
+                details={"judgments": judgments},
             )
 
-        danger_summary = "; ".join(
-            f"{d['file']}: {d['label']} ({d.get('reason', 'flagged')})"
-            for d in dangerous
+        if ambiguous:
+            amb_summary = "; ".join(
+                f"{a['file']}: {a['label']} ({a.get('reason', 'unclear')})"
+                for a in ambiguous
+            )
+            return EvalResult(
+                check_name="safety_scan",
+                severity="warn",
+                message=f"Ambiguous patterns found: {amb_summary}",
+                details={"judgments": judgments},
+            )
+
+        ack_summary = "; ".join(
+            f"{a['file']}: {a['label']} (ok: {a.get('reason', 'legitimate')})"
+            for a in acknowledged
         )
         return EvalResult(
             check_name="safety_scan",
-            passed=False,
-            message=f"Dangerous patterns confirmed: {danger_summary}",
+            severity="pass",
+            message=f"All patterns reviewed and accepted: {ack_summary}",
+            details={"judgments": judgments},
         )
 
     # --- No LLM: strict regex-only mode ---
     findings = [f"{h['file']}: {h['label']}" for h in hits]
     return EvalResult(
         check_name="safety_scan",
-        passed=False,
+        severity="fail",
         message=f"Suspicious patterns found (no LLM review): {'; '.join(findings)}",
     )
+
+
+def _find_prompt_injection_hits(body: str) -> list[dict]:
+    """Scan SKILL.md body for prompt injection patterns.
+
+    Returns a list of dicts with keys 'pattern', 'label', 'context'.
+    """
+    hits: list[dict] = []
+    for line in body.splitlines():
+        for pattern, label in _PROMPT_INJECTION_PATTERNS:
+            match = re.search(pattern, line)
+            if match:
+                hits.append({
+                    "pattern": pattern,
+                    "label": label,
+                    "context": line.strip()[:200],
+                })
+    return hits
+
+
+def check_prompt_safety(
+    skill_md_body: str,
+    skill_name: str = "",
+    skill_description: str = "",
+    analyze_prompt_fn: AnalyzePromptFn | None = None,
+) -> EvalResult:
+    """Two-stage prompt injection scan for the SKILL.md body.
+
+    Stage 1: regex patterns find candidate injection patterns.
+    Stage 2 (if analyze_prompt_fn provided): LLM classifies each hit.
+    """
+    hits = _find_prompt_injection_hits(skill_md_body)
+
+    if not hits:
+        return EvalResult(
+            check_name="prompt_safety",
+            severity="pass",
+            message="No prompt injection patterns detected",
+        )
+
+    # --- LLM judge available ---
+    if analyze_prompt_fn is not None:
+        judgments = analyze_prompt_fn(hits, skill_name, skill_description)
+        dangerous = [j for j in judgments if j.get("dangerous", True)]
+        ambiguous = [j for j in judgments if j.get("ambiguous", False) and not j.get("dangerous", True)]
+
+        if dangerous:
+            danger_summary = "; ".join(
+                f"{d['label']} ({d.get('reason', 'flagged')})"
+                for d in dangerous
+            )
+            return EvalResult(
+                check_name="prompt_safety",
+                severity="fail",
+                message=f"Dangerous prompt patterns confirmed: {danger_summary}",
+                details={"judgments": judgments},
+            )
+
+        if ambiguous:
+            amb_summary = "; ".join(
+                f"{a['label']} ({a.get('reason', 'unclear')})"
+                for a in ambiguous
+            )
+            return EvalResult(
+                check_name="prompt_safety",
+                severity="warn",
+                message=f"Ambiguous prompt patterns found: {amb_summary}",
+                details={"judgments": judgments},
+            )
+
+        return EvalResult(
+            check_name="prompt_safety",
+            severity="pass",
+            message="All prompt patterns reviewed and accepted",
+            details={"judgments": judgments},
+        )
+
+    # --- No LLM: strict mode ---
+    findings = [h["label"] for h in hits]
+    return EvalResult(
+        check_name="prompt_safety",
+        severity="fail",
+        message=f"Prompt injection patterns found (no LLM review): {'; '.join(findings)}",
+    )
+
+
+def detect_elevated_permissions(
+    source_files: list[tuple[str, str]],
+    allowed_tools: str | None,
+) -> list[str]:
+    """Scan source files and allowed_tools for elevated permission usage.
+
+    Returns a list of permission category strings (e.g. "shell", "network").
+    """
+    all_content = "\n".join(content for _, content in source_files)
+    if allowed_tools:
+        all_content += "\n" + allowed_tools
+
+    found: list[str] = []
+    for category, patterns in _ELEVATED_PERMISSION_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, all_content):
+                found.append(category)
+                break
+    return found
+
+
+def compute_grade(
+    results: tuple[EvalResult, ...],
+    elevated_permissions: list[str],
+    is_verified_org: bool,
+) -> str:
+    """Compute A/B/C/F grade from check results and context.
+
+    F: any check failed
+    C: any check warned (ambiguous)
+    B: elevated permissions or unverified org
+    A: all clear
+    """
+    if any(r.severity == "fail" for r in results):
+        return "F"
+    if any(r.severity == "warn" for r in results):
+        return "C"
+    if elevated_permissions or not is_verified_org:
+        return "B"
+    return "A"
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +431,12 @@ def evaluate_test_results(
     if not failures:
         return EvalResult(
             check_name="functional_tests",
-            passed=True,
+            severity="pass",
             message=f"All {len(cases)} test cases passed",
         )
     return EvalResult(
         check_name="functional_tests",
-        passed=False,
+        severity="fail",
         message=f"Test failures: {'; '.join(failures)}",
     )
 
@@ -275,6 +448,10 @@ def run_static_checks(
     skill_name: str = "",
     skill_description: str = "",
     analyze_fn: AnalyzeFn | None = None,
+    skill_md_body: str = "",
+    allowed_tools: str | None = None,
+    analyze_prompt_fn: AnalyzePromptFn | None = None,
+    is_verified_org: bool = True,
 ) -> GauntletReport:
     """Run all static analysis checks and return a GauntletReport.
 
@@ -284,7 +461,11 @@ def run_static_checks(
         source_files: List of (filename, content) for Python source files.
         skill_name: Skill name for LLM safety context.
         skill_description: Skill description for LLM safety context.
-        analyze_fn: Optional LLM judge callback for the safety scan.
+        analyze_fn: Optional LLM judge callback for the code safety scan.
+        skill_md_body: The body (system prompt) section of SKILL.md.
+        allowed_tools: The allowed_tools field from the manifest.
+        analyze_prompt_fn: Optional LLM callback for prompt safety scan.
+        is_verified_org: Whether the publishing org is verified.
     """
     results = [check_manifest_schema(skill_md_content)]
 
@@ -298,4 +479,17 @@ def run_static_checks(
         analyze_fn=analyze_fn,
     ))
 
-    return GauntletReport(results=tuple(results))
+    # Prompt injection scan (only if body is provided)
+    if skill_md_body:
+        results.append(check_prompt_safety(
+            skill_md_body,
+            skill_name=skill_name,
+            skill_description=skill_description,
+            analyze_prompt_fn=analyze_prompt_fn,
+        ))
+
+    elevated = detect_elevated_permissions(source_files, allowed_tools)
+    result_tuple = tuple(results)
+    grade = compute_grade(result_tuple, elevated, is_verified_org)
+
+    return GauntletReport(results=result_tuple, grade=grade)

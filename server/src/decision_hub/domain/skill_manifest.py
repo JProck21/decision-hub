@@ -196,6 +196,19 @@ def _parse_agent_target(data: dict) -> AgentTestTarget:
     )
 
 
+def extract_body(content: str) -> str:
+    """Extract the body (system prompt) from SKILL.md content.
+
+    Parses the frontmatter delimiters and returns the body text after
+    the closing ---. Returns an empty string if parsing fails.
+    """
+    try:
+        _, body = _split_frontmatter(content)
+        return body
+    except ValueError:
+        return ""
+
+
 def extract_description(content: str) -> str:
     """Extract the description field from SKILL.md content.
 

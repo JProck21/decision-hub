@@ -33,6 +33,20 @@ DHUB_ENV=dev uv run --package decision-hub-server uvicorn ...  # local dev serve
 - **Dev**: `https://lfiaschi--api-dev.modal.run`, config at `~/.dhub/config.dev.json`, env file `server/.env.dev`
 - **Prod**: `https://lfiaschi--api.modal.run`, config at `~/.dhub/config.prod.json`, env file `server/.env.prod`
 
+## Database Migrations
+
+No `psql` available on this machine. Run migrations via Python + SQLAlchemy instead:
+
+```bash
+DHUB_ENV=dev uv run --package decision-hub-server python -c "
+from decision_hub.settings import create_settings
+from decision_hub.infra.database import create_engine, metadata
+settings = create_settings('dev')
+engine = create_engine(settings.database_url)
+metadata.create_all(engine)
+"
+```
+
 ## Running Tests
 
 ```bash

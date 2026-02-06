@@ -3,7 +3,7 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
 
@@ -16,16 +16,18 @@ from decision_hub.domain.publish import (
     validate_skill_name,
 )
 from decision_hub.domain.search import format_trust_score
-from decision_hub.domain.skill_manifest import extract_description
+from decision_hub.domain.skill_manifest import extract_body, extract_description
 from decision_hub.infra.database import (
     delete_all_versions,
     delete_skill as delete_skill_record,
     delete_version,
     fetch_all_skills_for_index,
+    find_audit_logs,
     find_org_by_slug,
     find_org_member,
     find_skill,
     find_version,
+    insert_audit_log,
     insert_skill,
     insert_version,
     resolve_latest_version,
@@ -96,6 +98,20 @@ class SkillSummary(BaseModel):
     author: str
 
 
+class AuditLogResponse(BaseModel):
+    """A single audit log entry."""
+    id: str
+    org_slug: str
+    skill_name: str
+    semver: str
+    grade: str
+    version_id: str | None
+    check_results: list[dict]
+    llm_reasoning: dict | None
+    publisher: str
+    created_at: str | None
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -115,6 +131,13 @@ async def publish_skill(
     Validates org membership, semver, and skill name before uploading to S3
     and recording the version in the database.
     """
+    # LLM judge is required for publishing
+    if not settings.google_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM judge not configured. Cannot publish without LLM review.",
+        )
+
     meta = json.loads(metadata)
     org_slug = meta["org_slug"]
     skill_name = meta["skill_name"]
@@ -145,11 +168,13 @@ async def publish_skill(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    # Extract description from SKILL.md for storage and safety checks
+    # Extract description and body from SKILL.md
     description = extract_description(skill_md_content)
+    skill_md_body = extract_body(skill_md_content)
 
-    # Build the LLM analyze callback if Gemini is configured
+    # Build LLM callbacks
     analyze_fn = _build_analyze_fn(settings)
+    analyze_prompt_fn = _build_analyze_prompt_fn(settings)
 
     report = run_static_checks(
         skill_md_content,
@@ -158,15 +183,49 @@ async def publish_skill(
         skill_name=skill_name,
         skill_description=description,
         analyze_fn=analyze_fn,
+        skill_md_body=skill_md_body,
+        allowed_tools=None,
+        analyze_prompt_fn=analyze_prompt_fn,
+        is_verified_org=True,
     )
 
+    # Serialize check results for audit log
+    check_results_dicts = [
+        {
+            "check_name": r.check_name,
+            "severity": r.severity,
+            "message": r.message,
+        }
+        for r in report.results
+    ]
+
+    # Collect LLM reasoning from checks that have details
+    llm_reasoning = {
+        r.check_name: r.details
+        for r in report.results
+        if r.details is not None
+    } or None
+
     if not report.passed:
+        # Grade F: insert audit log with no version_id, then reject
+        insert_audit_log(
+            conn,
+            org_slug=org_slug,
+            skill_name=skill_name,
+            semver=version,
+            grade=report.grade,
+            check_results=check_results_dicts,
+            publisher=current_user.username,
+            version_id=None,
+            llm_reasoning=llm_reasoning,
+        )
+        conn.commit()
         raise HTTPException(
             status_code=422,
             detail=f"Gauntlet checks failed: {report.summary}",
         )
 
-    eval_status = "passed"
+    eval_status = report.grade
 
     # Upsert skill record (find or create), then check for duplicate version
     skill = find_skill(conn, org.id, skill_name)
@@ -195,6 +254,20 @@ async def publish_skill(
         published_by=current_user.username,
         eval_status=eval_status,
     )
+
+    # Insert audit log with version_id
+    insert_audit_log(
+        conn,
+        org_slug=org_slug,
+        skill_name=skill_name,
+        semver=version,
+        grade=report.grade,
+        check_results=check_results_dicts,
+        publisher=current_user.username,
+        version_id=version_record.id,
+        llm_reasoning=llm_reasoning,
+    )
+
     conn.commit()
 
     return PublishResponse(
@@ -257,6 +330,7 @@ def resolve_skill(
     org_slug: str,
     skill_name: str,
     spec: str = "latest",
+    allow_risky: bool = Query(False),
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
     settings: Settings = Depends(get_settings),
@@ -264,8 +338,11 @@ def resolve_skill(
     """Resolve a skill version and return a pre-signed download URL.
 
     The ``spec`` query parameter can be ``latest`` or an exact semver string.
+    Set ``allow_risky=true`` to also include C-grade versions.
     """
-    version = resolve_version(conn, org_slug, skill_name, spec)
+    version = resolve_version(
+        conn, org_slug, skill_name, spec, allow_risky=allow_risky,
+    )
     if version is None:
         raise HTTPException(
             status_code=404,
@@ -283,6 +360,38 @@ def resolve_skill(
         download_url=download_url,
         checksum=version.checksum,
     )
+
+
+@router.get(
+    "/skills/{org_slug}/{skill_name}/audit-log",
+    response_model=list[AuditLogResponse],
+)
+def get_audit_log(
+    org_slug: str,
+    skill_name: str,
+    semver: str | None = Query(None),
+    conn: Connection = Depends(get_connection),
+) -> list[AuditLogResponse]:
+    """Return evaluation audit log history for a skill.
+
+    Public endpoint — no authentication required.
+    """
+    entries = find_audit_logs(conn, org_slug, skill_name, semver=semver)
+    return [
+        AuditLogResponse(
+            id=str(entry.id),
+            org_slug=entry.org_slug,
+            skill_name=entry.skill_name,
+            semver=entry.semver,
+            grade=entry.grade,
+            version_id=str(entry.version_id) if entry.version_id else None,
+            check_results=entry.check_results,
+            llm_reasoning=entry.llm_reasoning,
+            publisher=entry.publisher,
+            created_at=entry.created_at.isoformat() if entry.created_at else None,
+        )
+        for entry in entries
+    ]
 
 
 @router.delete(
@@ -417,3 +526,28 @@ def _build_analyze_fn(settings: Settings):
         )
 
     return analyze_fn
+
+
+def _build_analyze_prompt_fn(settings: Settings):
+    """Build a Gemini prompt analyze callback if google_api_key is configured.
+
+    Returns None if no API key is set, which causes the prompt safety scan
+    to run in strict regex-only mode.
+    """
+    if not settings.google_api_key:
+        return None
+
+    from decision_hub.infra.gemini import analyze_prompt_safety, create_gemini_client
+
+    gemini_client = create_gemini_client(settings.google_api_key)
+
+    def analyze_prompt_fn(prompt_hits, skill_name, skill_description):
+        return analyze_prompt_safety(
+            gemini_client,
+            prompt_hits,
+            skill_name,
+            skill_description,
+            model=settings.gemini_model,
+        )
+
+    return analyze_prompt_fn

@@ -133,24 +133,43 @@ class TestCase:
 @dataclass(frozen=True)
 class EvalResult:
     check_name: str
-    passed: bool
+    severity: str  # "pass" | "warn" | "fail"
     message: str
+    details: dict | None = None
+
+    @property
+    def passed(self) -> bool:
+        return self.severity != "fail"
 
 
 @dataclass(frozen=True)
 class GauntletReport:
     results: tuple[EvalResult, ...]
+    grade: str  # "A", "B", "C", "F"
 
     @property
     def passed(self) -> bool:
-        return all(r.passed for r in self.results)
+        return self.grade != "F"
 
     @property
     def summary(self) -> str:
         passed = sum(1 for r in self.results if r.passed)
         total = len(self.results)
-        status = "PASSED" if self.passed else "FAILED"
-        return f"{status}: {passed}/{total} checks passed"
+        return f"Grade {self.grade}: {passed}/{total} checks passed"
+
+
+@dataclass(frozen=True)
+class AuditLogEntry:
+    id: UUID
+    org_slug: str
+    skill_name: str
+    semver: str
+    grade: str
+    version_id: UUID | None
+    check_results: list[dict]
+    llm_reasoning: dict | None
+    publisher: str
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)

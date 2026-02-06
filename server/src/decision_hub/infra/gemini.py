@@ -171,3 +171,97 @@ def analyze_code_safety(
     # Fallback: treat everything as dangerous if we can't parse the response
     return [{"file": s["file"], "label": s["label"], "dangerous": True,
              "reason": "Could not parse LLM response"} for s in source_snippets]
+
+
+def analyze_prompt_safety(
+    client: dict,
+    prompt_hits: list[dict],
+    skill_name: str,
+    skill_description: str,
+    model: str = "gemini-2.0-flash",
+) -> list[dict]:
+    """Ask Gemini to judge whether flagged prompt patterns are actually dangerous.
+
+    A regex pre-scan finds patterns in the SKILL.md body (system prompt) that
+    look like prompt injection, exfiltration, or hidden unicode. This function
+    sends those findings plus the skill's stated purpose to the LLM so it can
+    classify each as dangerous, ambiguous, or safe.
+
+    Args:
+        client: Gemini client config dict.
+        prompt_hits: List of dicts with keys 'pattern', 'label', 'context'.
+        skill_name: Name of the skill being scanned.
+        skill_description: What the skill says it does.
+        model: Gemini model to use.
+
+    Returns:
+        List of dicts with keys 'label', 'dangerous' (bool),
+        'ambiguous' (bool), 'reason' (str).
+    """
+    import json
+
+    prompt = (
+        "You are a security reviewer for Decision Hub, a package registry for "
+        "AI agent skills. A regex pre-scan flagged the following patterns in a "
+        "skill's system prompt (SKILL.md body) as potentially dangerous. Your "
+        "job is to decide whether each finding is genuinely dangerous (prompt "
+        "injection, data exfiltration), ambiguous (unclear intent), or safe "
+        "(legitimate for the skill's purpose).\n\n"
+        f"Skill name: {skill_name}\n"
+        f"Skill description: {skill_description}\n\n"
+        "Flagged patterns:\n"
+    )
+    for h in prompt_hits:
+        prompt += f"- Pattern: {h['label']}, Context: {h['context']}\n"
+
+    prompt += (
+        "\nFor each finding, respond with a JSON array. Each element must have:\n"
+        '  {"label": "<pattern label>", "dangerous": true/false, '
+        '"ambiguous": true/false, "reason": "<brief explanation>"}\n\n'
+        "Mark as dangerous only if it clearly attempts prompt injection, "
+        "data exfiltration, or role hijacking. Mark as ambiguous if the "
+        "intent is unclear. Mark both dangerous and ambiguous as false if "
+        "the pattern is legitimate for this skill. "
+        "Respond ONLY with the JSON array, no other text."
+    )
+
+    url = f"{client['base_url']}/{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0},
+    }
+
+    with httpx.Client(timeout=30) as http_client:
+        resp = http_client.post(
+            url,
+            params={"key": client["api_key"]},
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return [{"label": h["label"], "dangerous": True, "ambiguous": False,
+                 "reason": "LLM returned no response"} for h in prompt_hits]
+
+    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
+    # Strip markdown code fences if present
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    try:
+        results = json.loads(text)
+        if isinstance(results, list):
+            return results
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: treat everything as dangerous if we can't parse
+    return [{"label": h["label"], "dangerous": True, "ambiguous": False,
+             "reason": "Could not parse LLM response"} for h in prompt_hits]

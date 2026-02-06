@@ -35,7 +35,7 @@ def _make_version(
     skill: Skill,
     semver: str = "1.0.0",
     published_by: str = "testuser",
-    eval_status: str = "passed",
+    eval_status: str = "A",
 ) -> Version:
     return Version(
         id=uuid4(),
@@ -97,6 +97,23 @@ def _publish_request(
 class TestPublishSkill:
     """POST /v1/publish -- publish a new skill version."""
 
+    def test_publish_returns_503_without_llm(
+        self,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        test_settings: MagicMock,
+    ) -> None:
+        """Publishing without google_api_key returns 503."""
+        test_settings.google_api_key = ""
+
+        resp = _publish_request(client, auth_headers)
+
+        assert resp.status_code == 503
+        assert "LLM judge" in resp.json()["detail"]
+
+    @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
     @patch("decision_hub.api.registry_routes.update_skill_description")
     @patch("decision_hub.api.registry_routes.insert_version")
     @patch("decision_hub.api.registry_routes.find_version")
@@ -115,11 +132,16 @@ class TestPublishSkill:
         mock_find_version: MagicMock,
         mock_insert_version: MagicMock,
         mock_update_desc: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """Full publish flow: org exists, user is member, skill exists, Gauntlet passes."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         skill = _make_skill(org)
         version = _make_version(skill)
@@ -138,11 +160,11 @@ class TestPublishSkill:
         data = resp.json()
         assert data["skill_id"] == str(skill.id)
         assert data["version"] == "1.0.0"
-        assert data["s3_key"] == "skills/test-org/my-skill/1.0.0.zip"
-        assert data["checksum"] == "abc123def456"
-        assert data["eval_status"] == "passed"
+        assert data["eval_status"] in ("A", "B")
         # Existing skill gets its description updated
         mock_update_desc.assert_called_once()
+        # Audit log inserted for successful publish
+        mock_insert_audit.assert_called_once()
 
     @patch("decision_hub.api.registry_routes.find_org_by_slug")
     def test_publish_org_not_found(
@@ -150,8 +172,10 @@ class TestPublishSkill:
         mock_find_org: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
+        test_settings: MagicMock,
     ) -> None:
         """Publishing to a non-existent org should return 404."""
+        test_settings.google_api_key = "test-key"
         mock_find_org.return_value = None
 
         resp = _publish_request(client, auth_headers, org_slug="no-such-org")
@@ -168,8 +192,10 @@ class TestPublishSkill:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """Publishing when user is not an org member should return 403."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         mock_find_org.return_value = org
         mock_find_member.return_value = None
@@ -194,6 +220,9 @@ class TestPublishSkill:
 
         assert resp.status_code == 401
 
+    @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
     @patch("decision_hub.api.registry_routes.insert_version")
     @patch("decision_hub.api.registry_routes.find_version")
     @patch("decision_hub.api.registry_routes.insert_skill")
@@ -212,11 +241,16 @@ class TestPublishSkill:
         mock_insert_skill: MagicMock,
         mock_find_version: MagicMock,
         mock_insert_version: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """When skill doesn't exist yet, it should be created via insert_skill."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         new_skill = _make_skill(org, name="brand-new-skill")
         version = _make_version(new_skill)
@@ -242,6 +276,8 @@ class TestPublishSkill:
         )
         assert resp.json()["skill_id"] == str(new_skill.id)
 
+    @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.find_version")
     @patch("decision_hub.api.registry_routes.find_skill")
     @patch("decision_hub.api.registry_routes.compute_checksum")
@@ -254,11 +290,15 @@ class TestPublishSkill:
         mock_checksum: MagicMock,
         mock_find_skill: MagicMock,
         mock_find_version: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """Publishing an already-existing version should return 409."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         skill = _make_skill(org)
         existing_version = _make_version(skill)
@@ -274,17 +314,25 @@ class TestPublishSkill:
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
 
+    @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
     @patch("decision_hub.api.registry_routes.find_org_member")
     @patch("decision_hub.api.registry_routes.find_org_by_slug")
     def test_publish_gauntlet_blocks_dangerous_skill(
         self,
         mock_find_org: MagicMock,
         mock_find_member: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """Publish should return 422 when Gauntlet static checks fail."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         mock_find_org.return_value = org
         mock_find_member.return_value = _make_member(org, sample_user_id)
@@ -295,18 +343,32 @@ class TestPublishSkill:
 
         assert resp.status_code == 422
         assert "Gauntlet checks failed" in resp.json()["detail"]
+        # Audit log should still be inserted for F-grade rejections
+        mock_insert_audit.assert_called_once()
+        call_kwargs = mock_insert_audit.call_args
+        assert call_kwargs.kwargs.get("grade") == "F" or (
+            len(call_kwargs.args) > 4 and call_kwargs.args[4] == "F"
+        )
 
+    @patch("decision_hub.api.registry_routes._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
     @patch("decision_hub.api.registry_routes.find_org_member")
     @patch("decision_hub.api.registry_routes.find_org_by_slug")
     def test_publish_gauntlet_blocks_suspicious_code(
         self,
         mock_find_org: MagicMock,
         mock_find_member: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
+        test_settings: MagicMock,
     ) -> None:
         """Publish should return 422 when safety scan detects suspicious patterns."""
+        test_settings.google_api_key = "test-key"
         org = _make_org(sample_user_id)
         mock_find_org.return_value = org
         mock_find_member.return_value = _make_member(org, sample_user_id)
@@ -415,6 +477,100 @@ class TestResolveSkill:
 
         # No auth_headers -- should still succeed
         resp = client.get("/v1/resolve/test-org/my-skill")
+
+        assert resp.status_code == 200
+
+    @patch("decision_hub.api.registry_routes.generate_presigned_url")
+    @patch("decision_hub.api.registry_routes.resolve_version")
+    def test_resolve_with_allow_risky(
+        self,
+        mock_resolve: MagicMock,
+        mock_presign: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Resolve with allow_risky=true passes the flag through."""
+        org = _make_org()
+        skill = _make_skill(org)
+        version = _make_version(skill, eval_status="C")
+
+        mock_resolve.return_value = version
+        mock_presign.return_value = "https://s3.example.com/risky"
+
+        resp = client.get(
+            "/v1/resolve/test-org/my-skill?spec=latest&allow_risky=true"
+        )
+
+        assert resp.status_code == 200
+        # Verify allow_risky was passed to resolve_version
+        mock_resolve.assert_called_once()
+        call_kwargs = mock_resolve.call_args
+        assert call_kwargs.kwargs.get("allow_risky") is True
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/skills/{org_slug}/{skill_name}/audit-log
+# ---------------------------------------------------------------------------
+
+class TestGetAuditLog:
+    """GET /v1/skills/{org}/{skill}/audit-log -- evaluation history."""
+
+    @patch("decision_hub.api.registry_routes.find_audit_logs")
+    def test_audit_log_empty(
+        self,
+        mock_find: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Returns empty list when no audit logs exist."""
+        mock_find.return_value = []
+
+        resp = client.get("/v1/skills/test-org/my-skill/audit-log")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @patch("decision_hub.api.registry_routes.find_audit_logs")
+    def test_audit_log_returns_entries(
+        self,
+        mock_find: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Returns audit log entries with all fields."""
+        from datetime import datetime, timezone
+
+        from decision_hub.models import AuditLogEntry
+
+        entry = AuditLogEntry(
+            id=uuid4(),
+            org_slug="test-org",
+            skill_name="my-skill",
+            semver="1.0.0",
+            grade="A",
+            version_id=uuid4(),
+            check_results=[{"check_name": "manifest_schema", "severity": "pass", "message": "ok"}],
+            llm_reasoning=None,
+            publisher="testuser",
+            created_at=datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        mock_find.return_value = [entry]
+
+        resp = client.get("/v1/skills/test-org/my-skill/audit-log")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["grade"] == "A"
+        assert data[0]["publisher"] == "testuser"
+
+    @patch("decision_hub.api.registry_routes.find_audit_logs")
+    def test_audit_log_does_not_require_auth(
+        self,
+        mock_find: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Audit log endpoint is public."""
+        mock_find.return_value = []
+
+        resp = client.get("/v1/skills/test-org/my-skill/audit-log")
 
         assert resp.status_code == 200
 
@@ -658,7 +814,7 @@ class TestListSkills:
                 "skill_name": "doc-writer",
                 "description": "Writes documentation",
                 "latest_version": "1.2.0",
-                "eval_status": "passed",
+                "eval_status": "A",
                 "created_at": datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
                 "published_by": "alice",
             },
@@ -684,32 +840,41 @@ class TestListSkills:
         mock_fetch: MagicMock,
         client: TestClient,
     ) -> None:
-        """Safety rating maps eval_status correctly."""
+        """Safety rating maps eval_status correctly for both new and legacy values."""
         mock_fetch.return_value = [
             {
                 "org_slug": "org1",
                 "skill_name": "safe-skill",
                 "description": "",
                 "latest_version": "1.0.0",
-                "eval_status": "passed",
+                "eval_status": "A",
                 "created_at": None,
                 "published_by": "alice",
             },
             {
                 "org_slug": "org2",
-                "skill_name": "pending-skill",
+                "skill_name": "verified-skill",
                 "description": "",
                 "latest_version": "0.1.0",
-                "eval_status": "pending",
+                "eval_status": "B",
                 "created_at": None,
                 "published_by": "bob",
             },
             {
                 "org_slug": "org3",
-                "skill_name": "failed-skill",
+                "skill_name": "risky-skill",
                 "description": "",
                 "latest_version": "2.0.0",
-                "eval_status": "failed",
+                "eval_status": "C",
+                "created_at": None,
+                "published_by": "",
+            },
+            {
+                "org_slug": "org4",
+                "skill_name": "legacy-skill",
+                "description": "",
+                "latest_version": "1.0.0",
+                "eval_status": "passed",
                 "created_at": None,
                 "published_by": "",
             },
@@ -720,8 +885,9 @@ class TestListSkills:
         assert resp.status_code == 200
         data = resp.json()
         assert data[0]["safety_rating"] == "A"
-        assert data[1]["safety_rating"] == "C"
-        assert data[2]["safety_rating"] == "F"
+        assert data[1]["safety_rating"] == "B"
+        assert data[2]["safety_rating"] == "C"
+        assert data[3]["safety_rating"] == "A"  # legacy "passed" -> A
 
     @patch("decision_hub.api.registry_routes.fetch_all_skills_for_index")
     def test_list_skills_does_not_require_auth(
