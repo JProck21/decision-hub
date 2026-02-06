@@ -28,6 +28,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "respx>=0.21.0",
 ]
 
 [project.scripts]

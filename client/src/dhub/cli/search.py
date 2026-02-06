@@ -18,7 +18,7 @@ def ask_command(
     """
     from dhub.cli.config import build_headers, get_api_url, get_token
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{get_api_url()}/v1/search",
             params={"q": query},

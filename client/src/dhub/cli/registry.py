@@ -214,7 +214,7 @@ def _auto_bump_version(
     """Fetch the latest version from the registry and auto-bump it."""
     from dhub.cli.config import build_headers
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{api_url}/v1/skills/{org}/{name}/latest-version",
             headers=build_headers(token),
@@ -264,7 +264,7 @@ def list_command() -> None:
 
     api_url = get_api_url()
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{api_url}/v1/skills",
             headers=build_headers(get_token()),
@@ -400,7 +400,7 @@ def eval_report_command(
     headers = build_headers(get_token())
 
     # Fetch the eval report
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{api_url}/v1/skills/{org_slug}/{skill_name}/versions/{version}/eval-report",
             headers=headers,
@@ -489,7 +489,7 @@ def install_command(
     resolve_params: dict[str, str] = {"spec": version}
     if allow_risky:
         resolve_params["allow_risky"] = "true"
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
             params=resolve_params,
@@ -509,7 +509,7 @@ def install_command(
 
     # Download the zip
     console.print(f"Downloading {org_slug}/{skill_name}@{resolved_version}...")
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(download_url)
         resp.raise_for_status()
         zip_data = resp.content

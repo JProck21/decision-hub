@@ -19,7 +19,7 @@ def login_command(
     base_url = api_url or get_api_url()
 
     # Step 1: Request a device code from the API
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.post(f"{base_url}/auth/github/code", headers=build_headers())
         resp.raise_for_status()
         data = resp.json()
@@ -86,7 +86,7 @@ def _poll_for_token(
 
     from dhub.cli.config import build_headers
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=60) as client:
         while time.monotonic() < deadline:
             resp = client.post(
                 f"{base_url}/auth/github/token",

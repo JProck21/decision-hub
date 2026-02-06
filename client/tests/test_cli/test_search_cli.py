@@ -1,7 +1,9 @@
 """Tests for dhub.cli.search -- ask command."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+import httpx
+import respx
 from typer.testing import CliRunner
 
 from dhub.cli.app import app
@@ -10,50 +12,21 @@ runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_mock_client(response: MagicMock) -> MagicMock:
-    """Return a mock httpx.Client usable as a context manager."""
-    client = MagicMock()
-    client.__enter__ = MagicMock(return_value=client)
-    client.__exit__ = MagicMock(return_value=False)
-    client.get.return_value = response
-    return client
-
-
-def _ok_response(json_data: dict | None = None, status_code: int = 200) -> MagicMock:
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.json.return_value = json_data or {}
-    resp.raise_for_status = MagicMock()
-    return resp
-
-
-def _error_response(status_code: int) -> MagicMock:
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.raise_for_status = MagicMock()
-    return resp
-
-
-# ---------------------------------------------------------------------------
 # ask_command tests
 # ---------------------------------------------------------------------------
 
 class TestAskCommand:
 
+    @respx.mock
     @patch("dhub.cli.config.get_token", return_value="test-token")
     @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
-    @patch("dhub.cli.search.httpx.Client")
     def test_ask_success(
         self,
-        mock_client_cls: MagicMock,
-        _mock_url: MagicMock,
-        _mock_token: MagicMock,
+        _mock_url,
+        _mock_token,
     ) -> None:
-        mock_client_cls.return_value = _make_mock_client(
-            _ok_response({
+        respx.get("http://test:8000/v1/search").mock(
+            return_value=httpx.Response(200, json={
                 "query": "analyze A/B test results",
                 "results": "Found 3 matching skills:\n- ab-test-analyzer\n- stats-runner\n- experiment-tools",
             })
@@ -65,16 +38,17 @@ class TestAskCommand:
         assert "analyze A/B test results" in result.output
         assert "ab-test-analyzer" in result.output
 
+    @respx.mock
     @patch("dhub.cli.config.get_token", return_value="test-token")
     @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
-    @patch("dhub.cli.search.httpx.Client")
     def test_ask_503_not_configured(
         self,
-        mock_client_cls: MagicMock,
-        _mock_url: MagicMock,
-        _mock_token: MagicMock,
+        _mock_url,
+        _mock_token,
     ) -> None:
-        mock_client_cls.return_value = _make_mock_client(_error_response(503))
+        respx.get("http://test:8000/v1/search").mock(
+            return_value=httpx.Response(503)
+        )
 
         result = runner.invoke(app, ["ask", "some query"])
 

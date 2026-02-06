@@ -22,7 +22,7 @@ def add_key(
         console.print("[red]Error: Key value cannot be empty.[/]")
         raise typer.Exit(1)
 
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.post(
             f"{get_api_url()}/v1/keys",
             headers=build_headers(get_token()),
@@ -44,7 +44,7 @@ def list_keys() -> None:
     """List stored API key names."""
     from dhub.cli.config import build_headers, get_api_url, get_token
 
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.get(
             f"{get_api_url()}/v1/keys",
             headers=build_headers(get_token()),
@@ -73,7 +73,7 @@ def remove_key(
     """Remove a stored API key."""
     from dhub.cli.config import build_headers, get_api_url, get_token
 
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60) as client:
         resp = client.delete(
             f"{get_api_url()}/v1/keys/{key_name}",
             headers=build_headers(get_token()),
