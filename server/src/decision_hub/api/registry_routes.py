@@ -151,8 +151,12 @@ class EvalReportResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# Sync ``def`` so FastAPI runs it in a threadpool.  Using ``async def``
+# would block the event loop during synchronous DB/S3/gauntlet calls and
+# also requires ``await zip_file.read()`` which deadlocks under
+# BaseHTTPMiddleware (see CLIVersionMiddleware docstring in app.py).
 @router.post("/publish", response_model=PublishResponse, status_code=201)
-async def publish_skill(
+def publish_skill(
     background_tasks: BackgroundTasks,
     metadata: str = Form(...),
     zip_file: UploadFile = File(...),
@@ -196,7 +200,7 @@ async def publish_skill(
 
     # Read file contents with size limit (50 MB) and compute checksum
     max_upload_bytes = 50 * 1024 * 1024
-    file_bytes = await zip_file.read(max_upload_bytes + 1)
+    file_bytes = zip_file.file.read(max_upload_bytes + 1)
     if len(file_bytes) > max_upload_bytes:
         raise HTTPException(
             status_code=413,
