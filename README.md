@@ -45,12 +45,6 @@ dhub login
 # Create an organization
 dhub org create my-org
 
-# Invite a team member
-dhub org invite my-org --user jchu --role admin
-
-# Accept an invite
-dhub org accept <invite-id>
-
 # List your organizations
 dhub org list
 ```
@@ -129,26 +123,39 @@ dhub keys remove ANTHROPIC_API_KEY
 
 ## SKILL.md Format
 
+Decision Hub extends the [Agent Skills specification](https://agentskills.io/specification) with optional `runtime` and `evals` blocks for executable skills and automated evaluation.
+
 ```yaml
 ---
 name: my-skill
 description: >
-  A description of what this skill does.
+  A description of what this skill does and when to use it.
 
+# --- Standard Agent Skills fields (see agentskills.io/specification) ---
+license: Apache-2.0
+compatibility: Requires access to the internet
+metadata:
+  author: my-org
+
+# --- Decision Hub extensions ---
 runtime:
-  driver: "local/uv"
-  entrypoint: "src/main.py"
-  lockfile: "uv.lock"
+  language: python
+  entrypoint: src/main.py
+  version_hint: ">=3.11"
   env: ["OPENAI_API_KEY"]
+  capabilities: ["network"]
+  dependencies:
+    package_manager: uv
+    lockfile: uv.lock
 
-testing:
-  cases: "tests/cases.json"
-  agents:
-    - name: "claude"
-      required_keys: ["ANTHROPIC_API_KEY"]
+evals:
+  agent: claude
+  judge_model: gpt-4o
 ---
 System prompt for the agent goes here.
 ```
+
+The `runtime` block declares what the skill needs to run. The `evals` block configures automated agent evaluation — individual eval cases live in `evals/*.yaml` files inside the skill zip.
 
 ## Environments
 

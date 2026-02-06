@@ -36,7 +36,7 @@ def parse_skill_md(path: Path) -> SkillManifest:
     """
     content = path.read_text()
     frontmatter_str, body = _split_frontmatter(content)
-    data = yaml.safe_load(frontmatter_str)
+    data = _parse_frontmatter_yaml(frontmatter_str)
 
     if not isinstance(data, dict):
         raise ValueError("Frontmatter must be a YAML mapping.")
@@ -89,6 +89,34 @@ def parse_skill_md(path: Path) -> SkillManifest:
         )
 
     return manifest
+
+
+def _parse_frontmatter_yaml(frontmatter_str: str) -> dict:
+    """Parse YAML frontmatter with a fallback for unquoted special characters.
+
+    Descriptions often contain colons which break standard YAML parsing.
+    When yaml.safe_load fails, falls back to line-by-line regex extraction
+    for the top-level scalar fields (name, description), then re-parses
+    the remaining structured blocks.
+    """
+    try:
+        return yaml.safe_load(frontmatter_str)
+    except yaml.YAMLError:
+        pass
+
+    # Fallback: extract fields via regex, quoting problematic values
+    lines = frontmatter_str.split("\n")
+    patched: list[str] = []
+    for line in lines:
+        # Match top-level scalar fields whose values contain unquoted colons
+        m = re.match(r"^(name|description):\s*(.+)$", line)
+        if m and ":" in m.group(2):
+            patched.append(f'{m.group(1)}: "{m.group(2)}"')
+        else:
+            patched.append(line)
+
+    patched_str = "\n".join(patched)
+    return yaml.safe_load(patched_str)
 
 
 def _split_frontmatter(content: str) -> tuple[str, str]:

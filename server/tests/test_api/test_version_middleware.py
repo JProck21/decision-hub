@@ -13,7 +13,9 @@ class TestVersionMiddleware:
         )
 
         assert resp.status_code == 426
-        assert "outdated" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "0.1.3" in detail
+        assert "0.2.0" in detail
 
     def test_missing_version_header_returns_426(self, test_app, client):
         """Requests without a version header get a 426 when enforcement is on."""

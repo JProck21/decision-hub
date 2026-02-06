@@ -53,7 +53,12 @@ def test_app(test_settings: MagicMock) -> FastAPI:
                     return JSONResponse(
                         status_code=426,
                         content={
-                            "detail": "Your CLI is outdated. Run 'pip install --upgrade dhub-cli' to update.",
+                            "detail": (
+                                f"Your CLI version ({client_ver or 'unknown'}) is below the "
+                                f"minimum required ({min_ver}). "
+                                "Run 'uv tool install --upgrade dhub-cli' or "
+                                "'pip install --upgrade dhub-cli' to update."
+                            ),
                         },
                     )
         return await call_next(request)

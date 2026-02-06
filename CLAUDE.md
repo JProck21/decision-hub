@@ -94,10 +94,19 @@ worship backward compatibility**: Don't freeze bad designs to avoid breaking cha
 refactor the code an ensure ## Data Flow
 
 
+## Client / Server Version Sync
+
+The server enforces a minimum CLI version via the `MIN_CLI_VERSION` setting in `server/.env.dev` and `server/.env.prod`. When making breaking changes that require the client and server to stay in sync (new request/response fields, changed CLI argument signatures, new required headers, removed or renamed endpoints), you **must**:
+
+1. Bump the version in `client/pyproject.toml`
+2. Update `MIN_CLI_VERSION` in both `server/.env.dev` and `server/.env.prod` to match
+3. Redeploy the server so the middleware rejects stale clients with a clear upgrade message
+
 ## Testing
 
 - Use `pytest` with fixtures in `conftest.py`
 - Mock external services (S3, OpenAI, Database) in tests
+
 ## Documentation
 
 After implementing significant changes, always check if the README.md needs updating. Update it for:
