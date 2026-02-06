@@ -702,6 +702,9 @@ def resolve_version(
         )
     )
 
+    # Only serve versions that passed evaluation
+    base = base.where(versions_table.c.eval_status == "passed")
+
     if spec == "latest":
         # Split semver into major.minor.patch and sort numerically descending
         major = sa.cast(
@@ -723,6 +726,82 @@ def resolve_version(
     if row is None:
         return None
     return _row_to_version(row)
+
+
+def resolve_latest_version(
+    conn: Connection,
+    org_slug: str,
+    skill_name: str,
+) -> Version | None:
+    """Find the latest version of a skill regardless of eval_status.
+
+    Used for auto-bumping: the publisher needs to know the highest
+    published semver even if it hasn't passed evaluation yet.
+    """
+    join = versions_table.join(
+        skills_table, versions_table.c.skill_id == skills_table.c.id
+    ).join(
+        organizations_table,
+        skills_table.c.org_id == organizations_table.c.id,
+    )
+
+    major = sa.cast(
+        sa.func.split_part(versions_table.c.semver, ".", 1), sa.Integer
+    )
+    minor = sa.cast(
+        sa.func.split_part(versions_table.c.semver, ".", 2), sa.Integer
+    )
+    patch = sa.cast(
+        sa.func.split_part(versions_table.c.semver, ".", 3), sa.Integer
+    )
+
+    stmt = (
+        sa.select(versions_table)
+        .select_from(join)
+        .where(
+            sa.and_(
+                organizations_table.c.slug == org_slug,
+                skills_table.c.name == skill_name,
+            )
+        )
+        .order_by(major.desc(), minor.desc(), patch.desc())
+        .limit(1)
+    )
+
+    row = conn.execute(stmt).first()
+    if row is None:
+        return None
+    return _row_to_version(row)
+
+
+def delete_all_versions(conn: Connection, skill_id: UUID) -> list[str]:
+    """Delete all versions of a skill.
+
+    Args:
+        conn: Active database connection.
+        skill_id: UUID of the parent skill.
+
+    Returns:
+        List of S3 keys for the deleted versions (for S3 cleanup).
+    """
+    # Fetch s3_keys before deleting
+    select_stmt = sa.select(versions_table.c.s3_key).where(
+        versions_table.c.skill_id == skill_id
+    )
+    rows = conn.execute(select_stmt).all()
+    s3_keys = [row.s3_key for row in rows]
+
+    delete_stmt = sa.delete(versions_table).where(
+        versions_table.c.skill_id == skill_id
+    )
+    conn.execute(delete_stmt)
+    return s3_keys
+
+
+def delete_skill(conn: Connection, skill_id: UUID) -> None:
+    """Delete a skill record (after all versions have been removed)."""
+    stmt = sa.delete(skills_table).where(skills_table.c.id == skill_id)
+    conn.execute(stmt)
 
 
 def delete_version(conn: Connection, skill_id: UUID, semver: str) -> bool:

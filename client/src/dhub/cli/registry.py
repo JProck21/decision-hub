@@ -19,15 +19,35 @@ def publish_command(
     ),
     org: str = typer.Option(..., "--org", help="Organization slug"),
     name: str = typer.Option(..., "--name", help="Skill name"),
-    version: str = typer.Option(..., "--version", help="Semver version"),
+    version: str = typer.Option(None, "--version", help="Explicit semver version (overrides auto-bump)"),
+    patch: bool = typer.Option(False, "--patch", help="Bump patch version"),
+    minor: bool = typer.Option(False, "--minor", help="Bump minor version"),
+    major: bool = typer.Option(False, "--major", help="Bump major version"),
 ) -> None:
-    """Publish a skill to the registry."""
-    from dhub.cli.config import get_api_url, get_token
-    from dhub.core.validation import validate_semver, validate_skill_name
+    """Publish a skill to the registry.
 
-    # Validate inputs before doing any I/O
+    Version is auto-bumped by default (patch). Use --major or --minor to
+    control the bump level, or --version to set an explicit version.
+    """
+    from dhub.cli.config import get_api_url, get_token
+    from dhub.core.validation import (
+        FIRST_VERSION,
+        bump_version,
+        validate_semver,
+        validate_skill_name,
+    )
+
     validate_skill_name(name)
-    validate_semver(version)
+
+    api_url = get_api_url()
+    token = get_token()
+
+    # Resolve version: explicit --version wins, otherwise auto-bump
+    if version is not None:
+        validate_semver(version)
+    else:
+        bump_level = _resolve_bump_level(patch, minor, major)
+        version = _auto_bump_version(api_url, token, org, name, bump_level, bump_version, FIRST_VERSION)
 
     # Verify the directory contains a SKILL.md manifest
     skill_md = path / "SKILL.md"
@@ -37,20 +57,18 @@ def publish_command(
         )
         raise typer.Exit(1)
 
-    # Package the directory into a zip archive
     console.print(f"Packaging skill from [cyan]{path.resolve()}[/]...")
     zip_data = _create_zip(path)
 
-    # Upload to the registry
-    console.print("Uploading...")
+    console.print(f"Publishing version [cyan]{version}[/]...")
     metadata = json.dumps(
         {"org_slug": org, "skill_name": name, "version": version}
     )
 
     with httpx.Client(timeout=60) as client:
         resp = client.post(
-            f"{get_api_url()}/v1/publish",
-            headers={"Authorization": f"Bearer {get_token()}"},
+            f"{api_url}/v1/publish",
+            headers={"Authorization": f"Bearer {token}"},
             files={"zip_file": ("skill.zip", zip_data, "application/zip")},
             data={"metadata": metadata},
         )
@@ -63,6 +81,47 @@ def publish_command(
         resp.raise_for_status()
 
     console.print(f"[green]Published: {org}/{name}@{version}[/]")
+
+
+def _resolve_bump_level(patch: bool, minor: bool, major: bool) -> str:
+    """Determine bump level from CLI flags. Default is 'patch'."""
+    flags = sum([patch, minor, major])
+    if flags > 1:
+        console.print("[red]Error: Only one of --patch, --minor, --major can be specified.[/]")
+        raise typer.Exit(1)
+    if major:
+        return "major"
+    if minor:
+        return "minor"
+    return "patch"
+
+
+def _auto_bump_version(
+    api_url: str,
+    token: str,
+    org: str,
+    name: str,
+    bump_level: str,
+    bump_version_fn,
+    first_version: str,
+) -> str:
+    """Fetch the latest version from the registry and auto-bump it."""
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            f"{api_url}/v1/skills/{org}/{name}/latest-version",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    if resp.status_code == 404:
+        version = first_version
+        console.print(f"First publish — using version [cyan]{version}[/]")
+        return version
+
+    resp.raise_for_status()
+    current = resp.json()["version"]
+    version = bump_version_fn(current, bump_level)
+    console.print(f"Auto-bumped: {current} -> [cyan]{version}[/]")
+    return version
 
 
 def _create_zip(path: Path) -> bytes:
@@ -136,9 +195,9 @@ def list_command() -> None:
 
 def delete_command(
     skill_ref: str = typer.Argument(help="Skill reference: org/skill"),
-    version: str = typer.Option(..., "--version", "-v", help="Version to delete"),
+    version: str = typer.Option(None, "--version", "-v", help="Version to delete (omit to delete all)"),
 ) -> None:
-    """Delete a published skill version from the registry."""
+    """Delete a published skill version (or all versions) from the registry."""
     from dhub.cli.config import get_api_url, get_token
 
     parts = skill_ref.split("/", 1)
@@ -149,25 +208,59 @@ def delete_command(
         raise typer.Exit(1)
     org_slug, skill_name = parts
 
-    with httpx.Client(timeout=60) as client:
-        resp = client.delete(
-            f"{get_api_url()}/v1/skills/{org_slug}/{skill_name}/{version}",
-            headers={"Authorization": f"Bearer {get_token()}"},
-        )
-        if resp.status_code == 404:
-            console.print(
-                f"[red]Error: Version {version} not found for "
-                f"{org_slug}/{skill_name}.[/]"
-            )
-            raise typer.Exit(1)
-        if resp.status_code == 403:
-            console.print(
-                "[red]Error: You don't have permission to delete this version.[/]"
-            )
-            raise typer.Exit(1)
-        resp.raise_for_status()
+    api_url = get_api_url()
+    headers = {"Authorization": f"Bearer {get_token()}"}
 
-    console.print(f"[green]Deleted: {org_slug}/{skill_name}@{version}[/]")
+    if version is None:
+        # Delete ALL versions
+        typer.confirm(
+            f"Delete ALL versions of {org_slug}/{skill_name}?",
+            abort=True,
+        )
+
+        with httpx.Client(timeout=60) as client:
+            resp = client.delete(
+                f"{api_url}/v1/skills/{org_slug}/{skill_name}",
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                console.print(
+                    f"[red]Error: Skill '{skill_name}' not found in {org_slug}.[/]"
+                )
+                raise typer.Exit(1)
+            if resp.status_code == 403:
+                console.print(
+                    "[red]Error: You don't have permission to delete this skill.[/]"
+                )
+                raise typer.Exit(1)
+            resp.raise_for_status()
+
+        data = resp.json()
+        count = data["versions_deleted"]
+        console.print(
+            f"[green]Deleted {count} version(s) of {org_slug}/{skill_name}[/]"
+        )
+    else:
+        # Delete a single version
+        with httpx.Client(timeout=60) as client:
+            resp = client.delete(
+                f"{api_url}/v1/skills/{org_slug}/{skill_name}/{version}",
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                console.print(
+                    f"[red]Error: Version {version} not found for "
+                    f"{org_slug}/{skill_name}.[/]"
+                )
+                raise typer.Exit(1)
+            if resp.status_code == 403:
+                console.print(
+                    "[red]Error: You don't have permission to delete this version.[/]"
+                )
+                raise typer.Exit(1)
+            resp.raise_for_status()
+
+        console.print(f"[green]Deleted: {org_slug}/{skill_name}@{version}[/]")
 
 
 def install_command(

@@ -60,10 +60,22 @@ dhub org list
 Skills are directories containing a `SKILL.md` manifest:
 
 ```bash
+# Auto-bump patch version (default: 0.1.0 for first publish, then +0.0.1)
+dhub publish --org my-org --name my-skill
+
+# Bump minor version (e.g. 1.2.3 -> 1.3.0)
+dhub publish --org my-org --name my-skill --minor
+
+# Bump major version (e.g. 1.2.3 -> 2.0.0)
+dhub publish --org my-org --name my-skill --major
+
+# Explicit version (overrides auto-bump)
 dhub publish --org my-org --name my-skill --version 1.0.0
 ```
 
 ### Installing Skills
+
+Only skills that have passed evaluation can be installed:
 
 ```bash
 # Install a skill (downloads to ~/.dhub/skills/org/skill/)
@@ -74,6 +86,16 @@ dhub install my-org/my-skill --version 1.0.0
 
 # Install for a specific agent
 dhub install my-org/my-skill --agent claude
+```
+
+### Deleting Skills
+
+```bash
+# Delete a specific version
+dhub delete my-org/my-skill --version 1.0.0
+
+# Delete all versions (prompts for confirmation)
+dhub delete my-org/my-skill
 ```
 
 ### Running Skills

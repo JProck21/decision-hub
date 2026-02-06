@@ -31,7 +31,12 @@ def _make_skill(org: Organization, name: str = "my-skill", description: str = "A
     return Skill(id=uuid4(), org_id=org.id, name=name, description=description)
 
 
-def _make_version(skill: Skill, semver: str = "1.0.0", published_by: str = "testuser") -> Version:
+def _make_version(
+    skill: Skill,
+    semver: str = "1.0.0",
+    published_by: str = "testuser",
+    eval_status: str = "passed",
+) -> Version:
     return Version(
         id=uuid4(),
         skill_id=skill.id,
@@ -39,7 +44,7 @@ def _make_version(skill: Skill, semver: str = "1.0.0", published_by: str = "test
         s3_key=f"skills/test-org/{skill.name}/{semver}.zip",
         checksum="abc123def456",
         runtime_config=None,
-        eval_status="pending",
+        eval_status=eval_status,
         created_at=None,
         published_by=published_by,
     )
@@ -730,3 +735,216 @@ class TestListSkills:
         resp = client.get("/v1/skills")
 
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/skills/{org_slug}/{skill_name}/latest-version
+# ---------------------------------------------------------------------------
+
+class TestGetLatestVersion:
+    """GET /v1/skills/{org}/{skill}/latest-version -- returns the latest published version."""
+
+    @patch("decision_hub.api.registry_routes.resolve_latest_version")
+    def test_latest_version_success(
+        self,
+        mock_resolve: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Returns the latest version string."""
+        org = _make_org()
+        skill = _make_skill(org)
+        version = _make_version(skill, semver="2.3.1")
+        mock_resolve.return_value = version
+
+        resp = client.get("/v1/skills/test-org/my-skill/latest-version")
+
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "2.3.1"
+
+    @patch("decision_hub.api.registry_routes.resolve_latest_version")
+    def test_latest_version_not_found(
+        self,
+        mock_resolve: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Returns 404 when no versions exist for the skill."""
+        mock_resolve.return_value = None
+
+        resp = client.get("/v1/skills/test-org/no-skill/latest-version")
+
+        assert resp.status_code == 404
+        assert "No versions found" in resp.json()["detail"]
+
+    @patch("decision_hub.api.registry_routes.resolve_latest_version")
+    def test_latest_version_does_not_require_auth(
+        self,
+        mock_resolve: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Latest-version endpoint is public — no auth required."""
+        org = _make_org()
+        skill = _make_skill(org)
+        mock_resolve.return_value = _make_version(skill)
+
+        resp = client.get("/v1/skills/test-org/my-skill/latest-version")
+
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/skills/{org_slug}/{skill_name} (all versions)
+# ---------------------------------------------------------------------------
+
+class TestDeleteAllVersions:
+    """DELETE /v1/skills/{org}/{skill} -- delete all versions and the skill record."""
+
+    @patch("decision_hub.api.registry_routes.delete_skill_zip")
+    @patch("decision_hub.api.registry_routes.delete_skill_record")
+    @patch("decision_hub.api.registry_routes.delete_all_versions")
+    @patch("decision_hub.api.registry_routes.find_skill")
+    @patch("decision_hub.api.registry_routes.find_org_member")
+    @patch("decision_hub.api.registry_routes.find_org_by_slug")
+    def test_delete_all_success(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        mock_find_skill: MagicMock,
+        mock_delete_all: MagicMock,
+        mock_delete_skill: MagicMock,
+        mock_delete_zip: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Owner can delete all versions successfully."""
+        org = _make_org(sample_user_id)
+        skill = _make_skill(org)
+
+        mock_find_org.return_value = org
+        mock_find_member.return_value = _make_member(org, sample_user_id)
+        mock_find_skill.return_value = skill
+        mock_delete_all.return_value = [
+            "skills/test-org/my-skill/1.0.0.zip",
+            "skills/test-org/my-skill/1.1.0.zip",
+        ]
+
+        resp = client.delete(
+            "/v1/skills/test-org/my-skill",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["org_slug"] == "test-org"
+        assert data["skill_name"] == "my-skill"
+        assert data["versions_deleted"] == 2
+        assert mock_delete_zip.call_count == 2
+        mock_delete_skill.assert_called_once()
+
+    def test_delete_all_no_auth(self, client: TestClient) -> None:
+        """Deleting without auth should return 401."""
+        resp = client.delete("/v1/skills/test-org/my-skill")
+        assert resp.status_code == 401
+
+    @patch("decision_hub.api.registry_routes.find_org_member")
+    @patch("decision_hub.api.registry_routes.find_org_by_slug")
+    def test_delete_all_forbidden_for_member(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Regular members should get 403."""
+        org = _make_org(sample_user_id)
+        mock_find_org.return_value = org
+        mock_find_member.return_value = OrgMember(
+            org_id=org.id, user_id=sample_user_id, role="member",
+        )
+
+        resp = client.delete(
+            "/v1/skills/test-org/my-skill",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 403
+
+    @patch("decision_hub.api.registry_routes.find_org_by_slug")
+    def test_delete_all_org_not_found(
+        self,
+        mock_find_org: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        """Deleting from a non-existent org should return 404."""
+        mock_find_org.return_value = None
+
+        resp = client.delete(
+            "/v1/skills/no-org/my-skill",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 404
+
+    @patch("decision_hub.api.registry_routes.find_skill")
+    @patch("decision_hub.api.registry_routes.find_org_member")
+    @patch("decision_hub.api.registry_routes.find_org_by_slug")
+    def test_delete_all_skill_not_found(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        mock_find_skill: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Deleting a non-existent skill should return 404."""
+        org = _make_org(sample_user_id)
+        mock_find_org.return_value = org
+        mock_find_member.return_value = _make_member(org, sample_user_id)
+        mock_find_skill.return_value = None
+
+        resp = client.delete(
+            "/v1/skills/test-org/no-skill",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    @patch("decision_hub.api.registry_routes.delete_skill_zip")
+    @patch("decision_hub.api.registry_routes.delete_skill_record")
+    @patch("decision_hub.api.registry_routes.delete_all_versions")
+    @patch("decision_hub.api.registry_routes.find_skill")
+    @patch("decision_hub.api.registry_routes.find_org_member")
+    @patch("decision_hub.api.registry_routes.find_org_by_slug")
+    def test_delete_all_allowed_for_admin(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        mock_find_skill: MagicMock,
+        mock_delete_all: MagicMock,
+        mock_delete_skill: MagicMock,
+        mock_delete_zip: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Admins should be able to delete all versions."""
+        org = _make_org(sample_user_id)
+        skill = _make_skill(org)
+        mock_find_org.return_value = org
+        mock_find_member.return_value = OrgMember(
+            org_id=org.id, user_id=sample_user_id, role="admin",
+        )
+        mock_find_skill.return_value = skill
+        mock_delete_all.return_value = ["key1.zip"]
+
+        resp = client.delete(
+            "/v1/skills/test-org/my-skill",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["versions_deleted"] == 1

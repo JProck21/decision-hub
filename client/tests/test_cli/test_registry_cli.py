@@ -66,7 +66,7 @@ class TestPublishCommand:
     @patch("dhub.cli.config.get_token", return_value="test-token")
     @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
     @patch("dhub.cli.registry.httpx.Client")
-    def test_publish_success(
+    def test_publish_success_explicit_version(
         self,
         mock_client_cls: MagicMock,
         _mock_url: MagicMock,
@@ -83,6 +83,155 @@ class TestPublishCommand:
 
         assert result.exit_code == 0
         assert "Published: myorg/my-skill@1.0.0" in result.output
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_publish_auto_bump_first_publish(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """First publish with no --version should default to 0.1.0."""
+        _write_skill_md(tmp_path)
+
+        # First call: latest-version returns 404, second call: publish succeeds
+        latest_resp = _error_response(404)
+        publish_resp = _ok_response()
+
+        client_latest = MagicMock()
+        client_latest.__enter__ = MagicMock(return_value=client_latest)
+        client_latest.__exit__ = MagicMock(return_value=False)
+        client_latest.get.return_value = latest_resp
+
+        client_publish = MagicMock()
+        client_publish.__enter__ = MagicMock(return_value=client_publish)
+        client_publish.__exit__ = MagicMock(return_value=False)
+        client_publish.post.return_value = publish_resp
+
+        mock_client_cls.side_effect = [client_latest, client_publish]
+
+        result = runner.invoke(
+            app,
+            ["publish", str(tmp_path), "--org", "myorg", "--name", "my-skill"],
+        )
+
+        assert result.exit_code == 0
+        assert "0.1.0" in result.output
+        assert "Published: myorg/my-skill@0.1.0" in result.output
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_publish_auto_bump_patch(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Auto-bump patch: 1.2.3 -> 1.2.4."""
+        _write_skill_md(tmp_path)
+
+        latest_resp = _ok_response(json_data={"version": "1.2.3"})
+        publish_resp = _ok_response()
+
+        client_latest = MagicMock()
+        client_latest.__enter__ = MagicMock(return_value=client_latest)
+        client_latest.__exit__ = MagicMock(return_value=False)
+        client_latest.get.return_value = latest_resp
+
+        client_publish = MagicMock()
+        client_publish.__enter__ = MagicMock(return_value=client_publish)
+        client_publish.__exit__ = MagicMock(return_value=False)
+        client_publish.post.return_value = publish_resp
+
+        mock_client_cls.side_effect = [client_latest, client_publish]
+
+        result = runner.invoke(
+            app,
+            ["publish", str(tmp_path), "--org", "myorg", "--name", "my-skill"],
+        )
+
+        assert result.exit_code == 0
+        assert "1.2.4" in result.output
+        assert "Published: myorg/my-skill@1.2.4" in result.output
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_publish_auto_bump_minor(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Auto-bump minor: 1.2.3 -> 1.3.0."""
+        _write_skill_md(tmp_path)
+
+        latest_resp = _ok_response(json_data={"version": "1.2.3"})
+        publish_resp = _ok_response()
+
+        client_latest = MagicMock()
+        client_latest.__enter__ = MagicMock(return_value=client_latest)
+        client_latest.__exit__ = MagicMock(return_value=False)
+        client_latest.get.return_value = latest_resp
+
+        client_publish = MagicMock()
+        client_publish.__enter__ = MagicMock(return_value=client_publish)
+        client_publish.__exit__ = MagicMock(return_value=False)
+        client_publish.post.return_value = publish_resp
+
+        mock_client_cls.side_effect = [client_latest, client_publish]
+
+        result = runner.invoke(
+            app,
+            ["publish", str(tmp_path), "--org", "myorg", "--name", "my-skill", "--minor"],
+        )
+
+        assert result.exit_code == 0
+        assert "1.3.0" in result.output
+        assert "Published: myorg/my-skill@1.3.0" in result.output
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_publish_auto_bump_major(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Auto-bump major: 1.2.3 -> 2.0.0."""
+        _write_skill_md(tmp_path)
+
+        latest_resp = _ok_response(json_data={"version": "1.2.3"})
+        publish_resp = _ok_response()
+
+        client_latest = MagicMock()
+        client_latest.__enter__ = MagicMock(return_value=client_latest)
+        client_latest.__exit__ = MagicMock(return_value=False)
+        client_latest.get.return_value = latest_resp
+
+        client_publish = MagicMock()
+        client_publish.__enter__ = MagicMock(return_value=client_publish)
+        client_publish.__exit__ = MagicMock(return_value=False)
+        client_publish.post.return_value = publish_resp
+
+        mock_client_cls.side_effect = [client_latest, client_publish]
+
+        result = runner.invoke(
+            app,
+            ["publish", str(tmp_path), "--org", "myorg", "--name", "my-skill", "--major"],
+        )
+
+        assert result.exit_code == 0
+        assert "2.0.0" in result.output
+        assert "Published: myorg/my-skill@2.0.0" in result.output
 
     def test_publish_missing_skill_md(self, tmp_path: Path) -> None:
         """Publish should fail when SKILL.md is absent."""
@@ -137,6 +286,18 @@ class TestPublishCommand:
 
         assert result.exit_code == 1
         assert "already exists" in result.output
+
+    def test_publish_multiple_bump_flags_rejected(self, tmp_path: Path) -> None:
+        """Specifying multiple bump flags should fail."""
+        _write_skill_md(tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["publish", str(tmp_path), "--org", "myorg", "--name", "my-skill", "--minor", "--major"],
+        )
+
+        assert result.exit_code == 1
+        assert "Only one" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +554,7 @@ class TestDeleteCommand:
     @patch("dhub.cli.config.get_token", return_value="test-token")
     @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
     @patch("dhub.cli.registry.httpx.Client")
-    def test_delete_success(
+    def test_delete_single_version_success(
         self,
         mock_client_cls: MagicMock,
         _mock_url: MagicMock,
@@ -413,6 +574,50 @@ class TestDeleteCommand:
         assert result.exit_code == 0
         assert "Deleted: myorg/my-skill@1.0.0" in result.output
         mock_client.delete.assert_called_once()
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_delete_all_versions_success(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+    ) -> None:
+        """Delete without --version should prompt confirmation and delete all."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        resp = _ok_response(
+            json_data={"org_slug": "myorg", "skill_name": "my-skill", "versions_deleted": 3}
+        )
+        mock_client.delete.return_value = resp
+        mock_client_cls.return_value = mock_client
+
+        # 'y' confirms the prompt
+        result = runner.invoke(
+            app, ["delete", "myorg/my-skill"], input="y\n"
+        )
+
+        assert result.exit_code == 0
+        assert "3 version(s)" in result.output
+        mock_client.delete.assert_called_once()
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_delete_all_versions_aborted(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+    ) -> None:
+        """Delete all should abort if user declines confirmation."""
+        result = runner.invoke(
+            app, ["delete", "myorg/my-skill"], input="n\n"
+        )
+
+        assert result.exit_code == 1
 
     def test_delete_invalid_skill_ref(self) -> None:
         """Delete should reject a skill reference without a slash."""
@@ -466,3 +671,26 @@ class TestDeleteCommand:
 
         assert result.exit_code == 1
         assert "permission" in result.output
+
+    @patch("dhub.cli.config.get_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    @patch("dhub.cli.registry.httpx.Client")
+    def test_delete_all_404_not_found(
+        self,
+        mock_client_cls: MagicMock,
+        _mock_url: MagicMock,
+        _mock_token: MagicMock,
+    ) -> None:
+        """Delete all for a non-existent skill should return error."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.delete.return_value = _error_response(404)
+        mock_client_cls.return_value = mock_client
+
+        result = runner.invoke(
+            app, ["delete", "myorg/no-skill"], input="y\n"
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output

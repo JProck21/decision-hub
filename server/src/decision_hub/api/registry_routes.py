@@ -18,6 +18,8 @@ from decision_hub.domain.publish import (
 from decision_hub.domain.search import format_trust_score
 from decision_hub.domain.skill_manifest import extract_description
 from decision_hub.infra.database import (
+    delete_all_versions,
+    delete_skill as delete_skill_record,
     delete_version,
     fetch_all_skills_for_index,
     find_org_by_slug,
@@ -26,6 +28,7 @@ from decision_hub.infra.database import (
     find_version,
     insert_skill,
     insert_version,
+    resolve_latest_version,
     resolve_version,
     update_skill_description,
 )
@@ -68,6 +71,18 @@ class DeleteResponse(BaseModel):
     org_slug: str
     skill_name: str
     version: str
+
+
+class LatestVersionResponse(BaseModel):
+    """Latest version of a skill."""
+    version: str
+
+
+class DeleteAllResponse(BaseModel):
+    """Confirmation of deleting all versions of a skill."""
+    org_slug: str
+    skill_name: str
+    versions_deleted: int
 
 
 class SkillSummary(BaseModel):
@@ -214,6 +229,29 @@ def list_skills(
     ]
 
 
+@router.get(
+    "/skills/{org_slug}/{skill_name}/latest-version",
+    response_model=LatestVersionResponse,
+)
+def get_latest_version(
+    org_slug: str,
+    skill_name: str,
+    conn: Connection = Depends(get_connection),
+) -> LatestVersionResponse:
+    """Return the latest published version of a skill (regardless of eval status).
+
+    Used by the CLI for auto-bumping during publish.
+    Public endpoint -- no authentication required.
+    """
+    version = resolve_latest_version(conn, org_slug, skill_name)
+    if version is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No versions found for {org_slug}/{skill_name}",
+        )
+    return LatestVersionResponse(version=version.semver)
+
+
 @router.get("/resolve/{org_slug}/{skill_name}", response_model=ResolveResponse)
 def resolve_skill(
     org_slug: str,
@@ -244,6 +282,55 @@ def resolve_skill(
         version=version.semver,
         download_url=download_url,
         checksum=version.checksum,
+    )
+
+
+@router.delete(
+    "/skills/{org_slug}/{skill_name}",
+    response_model=DeleteAllResponse,
+)
+def delete_all_skill_versions(
+    org_slug: str,
+    skill_name: str,
+    conn: Connection = Depends(get_connection),
+    s3_client=Depends(get_s3_client),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
+) -> DeleteAllResponse:
+    """Delete all versions of a skill and the skill record itself.
+
+    Only organisation owners and admins can delete skills.
+    """
+    org = find_org_by_slug(conn, org_slug)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+
+    member = find_org_member(conn, org.id, current_user.id)
+    if member is None or member.role not in ("owner", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only org owners and admins can delete skills",
+        )
+
+    skill = find_skill(conn, org.id, skill_name)
+    if skill is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Skill '{skill_name}' not found in {org_slug}",
+        )
+
+    s3_keys = delete_all_versions(conn, skill.id)
+    delete_skill_record(conn, skill.id)
+
+    for s3_key in s3_keys:
+        delete_skill_zip(s3_client, settings.s3_bucket, s3_key)
+
+    conn.commit()
+
+    return DeleteAllResponse(
+        org_slug=org_slug,
+        skill_name=skill_name,
+        versions_deleted=len(s3_keys),
     )
 
 
