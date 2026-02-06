@@ -2,6 +2,12 @@ version = 1
 revision = 1
 requires-python = ">=3.11"
 
+[manifest]
+members = [
+    "decision-hub-server",
+    "dhub",
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -294,9 +300,9 @@ wheels = [
 ]
 
 [[package]]
-name = "decision-hub"
+name = "decision-hub-server"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "server" }
 dependencies = [
     { name = "boto3" },
     { name = "cryptography" },
@@ -308,9 +314,7 @@ dependencies = [
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "pyyaml" },
-    { name = "rich" },
     { name = "sqlalchemy" },
-    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -338,10 +342,34 @@ requires-dist = [
     { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "rich", specifier = ">=13.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
-    { name = "typer", extras = ["all"], specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "dhub"
+version = "0.1.0"
+source = { editable = "client" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "typer", extras = ["all"], specifier = ">=0.12.0" },
 ]
 provides-extras = ["dev"]
 

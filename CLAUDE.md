@@ -1,16 +1,35 @@
 
+## Workspace Structure
+
+This is a **uv workspace monorepo** with two independent packages:
+
+- **`client/`** — `dhub` package (open-source CLI) — import path: `dhub.*`
+- **`server/`** — `decision-hub-server` package (private backend) — import path: `decision_hub.*`
+
 ## Tech Stack
 
 - **Python 3.11+** with type hints
-- **FastAPI** for REST API
-- **Typer + Rich** for CLI
-- **OpenAI** for  LLM 
+- **FastAPI** for REST API (server)
+- **Typer + Rich** for CLI (client)
+- **OpenAI** for  LLM
 - **Pydantic** for data validation and settings
 - **boto3** for S3 access
 
 
 **Important**: Always use `uv run` to execute Python code, not `python` directly.
 
+## Running Tests
+
+```bash
+# Client tests
+uv run --package dhub pytest client/tests/
+
+# Server tests
+uv run --package decision-hub-server pytest server/tests/
+
+# All tests
+uv run --package dhub pytest client/tests/ && uv run --package decision-hub-server pytest server/tests/
+```
 
 ## Coding Conventions
 
@@ -20,12 +39,12 @@
 
 ## Design Principles
 
-- **Single responsibility**: Small, single-purpose functions with one clear reason to change - **Clear interfaces**: Descriptive names, type hints, explicit signatures - 
-obvious inputs, outputs, and behavior - **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external 
-services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture - 
-**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8 - **YAGNI**: No abstractions or features "just in case" - add complexity 
-only for concrete needs - **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort - **Don't 
-worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks - **DRY** do not repeat yourself 
+- **Single responsibility**: Small, single-purpose functions with one clear reason to change - **Clear interfaces**: Descriptive names, type hints, explicit signatures -
+obvious inputs, outputs, and behavior - **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external
+services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture -
+**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8 - **YAGNI**: No abstractions or features "just in case" - add complexity
+only for concrete needs - **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort - **Don't
+worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks - **DRY** do not repeat yourself
 refactor the code an ensure ## Data Flow
 
 

@@ -4,14 +4,30 @@ The package manager & runtime for AI agent skills.
 
 Decision Hub is a CLI-first registry that allows developers to publish, discover, and securely install "Skills" -- modular capabilities (code + prompts) that agents like Claude, Cursor, and Gemini can use.
 
+## Architecture
+
+This repository is a **uv workspace monorepo** with two independent packages:
+
+| Package | Directory | Import path | Description |
+|---------|-----------|-------------|-------------|
+| `dhub` | `client/` | `dhub.*` | Open-source CLI tool |
+| `decision-hub-server` | `server/` | `decision_hub.*` | Private backend API |
+
+- **CLI** (`client/`): Python (Typer + Rich)
+- **API** (`server/`): FastAPI deployed on Modal
+- **Database**: PostgreSQL (Supabase)
+- **Storage**: S3 for skill artifacts
+- **Compute**: Modal for sandboxed evaluations
+- **Search**: Gemini LLM for natural language discovery
+
 ## Installation
 
 ```bash
 # Via uv
-uv tool install decision-hub
+uv tool install dhub
 
 # Via pipx
-pipx install decision-hub
+pipx install dhub
 ```
 
 ## Quick Start
@@ -112,31 +128,25 @@ testing:
 System prompt for the agent goes here.
 ```
 
-## Architecture
-
-- **CLI**: Python (Typer + Rich)
-- **API**: FastAPI deployed on Modal
-- **Database**: PostgreSQL (Supabase)
-- **Storage**: S3 for skill artifacts
-- **Compute**: Modal for sandboxed evaluations
-- **Search**: Gemini LLM for natural language discovery
-
 ## Development
 
 ```bash
-# Install dependencies
-uv sync
+# Install all dependencies
+uv sync --all-packages --all-extras
 
-# Run tests
-uv run pytest
+# Run client tests
+uv run --package dhub pytest client/tests/
+
+# Run server tests
+uv run --package decision-hub-server pytest server/tests/
 
 # Start local API server
-uv run uvicorn decision_hub.api.app:create_app --factory --reload
+uv run --package decision-hub-server uvicorn decision_hub.api.app:create_app --factory --reload
 
 # Deploy to Modal
-modal deploy modal_app.py
+cd server && modal deploy modal_app.py
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your values. See the example file for all available settings.
+Copy `server/.env.example` to `server/.env` and fill in your values. See the example file for all available settings.
