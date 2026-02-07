@@ -2,7 +2,13 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
+
+# Status vocabularies — single source of truth for magic strings
+CheckSeverity = Literal["pass", "warn", "fail"]
+SafetyGrade = Literal["A", "B", "C", "F"]
+EvalReportStatus = Literal["pending", "completed", "failed", "error"]
 
 
 @dataclass(frozen=True)
@@ -168,7 +174,7 @@ class EvalReport:
     passed: int
     total: int
     total_duration_ms: int
-    status: str
+    status: EvalReportStatus
     error_message: str | None = None
     created_at: datetime | None = None
 
@@ -203,7 +209,7 @@ class TestCase:
 @dataclass(frozen=True)
 class EvalResult:
     check_name: str
-    severity: str  # "pass" | "warn" | "fail"
+    severity: CheckSeverity
     message: str
     details: dict | None = None
 
@@ -215,7 +221,7 @@ class EvalResult:
 @dataclass(frozen=True)
 class GauntletReport:
     results: tuple[EvalResult, ...]
-    grade: str  # "A", "B", "C", "F"
+    grade: SafetyGrade
 
     @property
     def passed(self) -> bool:

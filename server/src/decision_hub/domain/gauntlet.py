@@ -11,7 +11,7 @@ import json
 import re
 from collections.abc import Callable
 
-from decision_hub.models import EvalResult, GauntletReport, TestCase
+from decision_hub.models import EvalResult, GauntletReport, SafetyGrade, TestCase
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ def compute_grade(
     results: tuple[EvalResult, ...],
     elevated_permissions: list[str],
     is_verified_org: bool,
-) -> str:
+) -> SafetyGrade:
     """Compute A/B/C/F grade from check results and context.
 
     F: any check failed

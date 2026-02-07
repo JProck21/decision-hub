@@ -2,6 +2,9 @@
 
 import json
 import logging
+import tempfile
+from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -17,7 +20,7 @@ from decision_hub.domain.publish import (
     validate_skill_name,
 )
 from decision_hub.domain.search import format_trust_score
-from decision_hub.domain.skill_manifest import extract_body, extract_description
+from decision_hub.domain.skill_manifest import extract_body, extract_description, parse_skill_md
 from decision_hub.infra.database import (
     delete_all_versions,
     delete_skill as delete_skill_record,
@@ -45,7 +48,7 @@ from decision_hub.infra.storage import (
     generate_presigned_url,
     upload_skill_zip,
 )
-from decision_hub.models import User
+from decision_hub.models import GauntletReport, Organization, User
 from decision_hub.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -164,10 +167,9 @@ def publish_skill(
     """Publish a new skill version.
 
     Accepts multipart form data with a metadata JSON string and a zip file.
-    Validates org membership, semver, and skill name before uploading to S3
-    and recording the version in the database.
+    Validates org membership, semver, and skill name before running the
+    Gauntlet safety pipeline and recording the version in the database.
     """
-    # LLM judge is required for publishing
     if not settings.google_api_key:
         raise HTTPException(
             status_code=503,
@@ -175,24 +177,11 @@ def publish_skill(
         )
 
     meta = json.loads(metadata)
-    org_slug = meta["org_slug"]
-    skill_name = meta["skill_name"]
-    version = meta["version"]
-
+    org_slug, skill_name, version = meta["org_slug"], meta["skill_name"], meta["version"]
     validate_skill_name(skill_name)
     validate_semver(version)
 
-    # Verify the caller belongs to the target organisation
-    org = find_org_by_slug(conn, org_slug)
-    if org is None:
-        raise HTTPException(status_code=404, detail="Organisation not found")
-
-    member = find_org_member(conn, org.id, current_user.id)
-    if member is None:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not a member of this organisation",
-        )
+    org = _require_org_membership(conn, org_slug, current_user.id)
 
     # Read file contents with size limit (50 MB) and compute checksum
     max_upload_bytes = 50 * 1024 * 1024
@@ -204,100 +193,37 @@ def publish_skill(
         )
     checksum = compute_checksum(file_bytes)
 
-    # Run Gauntlet static checks before uploading
     try:
         skill_md_content, source_files, lockfile_content = extract_for_evaluation(file_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    # Parse manifest to extract runtime config and eval config.
-    # If parsing fails (malformed frontmatter), the gauntlet will catch
-    # the issue downstream — we just skip runtime/eval extraction.
-    from decision_hub.domain.skill_manifest import parse_skill_md
-    import tempfile
-    from pathlib import Path
+    runtime_config_dict, eval_config, eval_cases = _parse_manifest_from_content(
+        skill_md_content, file_bytes,
+    )
 
-    runtime_config_dict = None
-    eval_config = None
-    eval_cases: tuple = ()
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
-        tmp.write(skill_md_content)
-        tmp_path = Path(tmp.name)
-
-    try:
-        manifest = parse_skill_md(tmp_path)
-        runtime_config_dict = _extract_runtime_config_dict(manifest)
-        eval_config = _extract_assessment_config(manifest)
-        eval_cases = _try_parse_assessment_cases(file_bytes)
-    except ValueError:
-        pass
-    finally:
-        tmp_path.unlink()
-
-    # Extract description and body from SKILL.md
     description = extract_description(skill_md_content)
     skill_md_body = extract_body(skill_md_content)
 
-    # Build LLM callbacks
-    analyze_fn = _build_analyze_fn(settings)
-    analyze_prompt_fn = _build_analyze_prompt_fn(settings)
-
-    report = run_static_checks(
-        skill_md_content,
-        lockfile_content,
-        source_files,
-        skill_name=skill_name,
-        skill_description=description,
-        analyze_fn=analyze_fn,
-        skill_md_body=skill_md_body,
-        allowed_tools=None,
-        analyze_prompt_fn=analyze_prompt_fn,
-        is_verified_org=True,
+    report, check_results_dicts, llm_reasoning = _run_gauntlet_pipeline(
+        skill_md_content, lockfile_content, source_files,
+        skill_name, description, skill_md_body, settings,
     )
 
-    # Serialize check results for audit log
-    check_results_dicts = [
-        {
-            "check_name": r.check_name,
-            "severity": r.severity,
-            "message": r.message,
-        }
-        for r in report.results
-    ]
-
-    # Collect LLM reasoning from checks that have details
-    llm_reasoning = {
-        r.check_name: r.details
-        for r in report.results
-        if r.details is not None
-    } or None
-
     if not report.passed:
-        # Grade F: quarantine the zip in S3 for forensic inspection
-        q_key = build_quarantine_s3_key(org_slug, skill_name, version)
-        upload_skill_zip(s3_client, settings.s3_bucket, q_key, file_bytes)
-
-        insert_audit_log(
-            conn,
+        _quarantine_rejected_skill(
+            conn, s3_client, settings.s3_bucket, file_bytes,
             org_slug=org_slug,
             skill_name=skill_name,
-            semver=version,
-            grade=report.grade,
+            version=version,
+            report=report,
             check_results=check_results_dicts,
-            publisher=current_user.username,
-            version_id=None,
             llm_reasoning=llm_reasoning,
-            quarantine_s3_key=q_key,
+            publisher=current_user.username,
         )
-        raise HTTPException(
-            status_code=422,
-            detail=f"Gauntlet checks failed: {report.summary}",
-        )
-
-    eval_status = report.grade
 
     # Upsert skill record (find or create), then check for duplicate version
+    eval_status = report.grade
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
         skill = insert_skill(conn, org.id, skill_name, description)
@@ -310,7 +236,7 @@ def publish_skill(
             detail=f"Version {version} already exists for {org_slug}/{skill_name}",
         )
 
-    # Upload to S3
+    # Upload to S3 and record the version
     s3_key = build_s3_key(org_slug, skill_name, version)
     upload_skill_zip(s3_client, settings.s3_bucket, s3_key, file_bytes)
 
@@ -325,7 +251,6 @@ def publish_skill(
         eval_status=eval_status,
     )
 
-    # Insert audit log with version_id
     insert_audit_log(
         conn,
         org_slug=org_slug,
@@ -338,7 +263,6 @@ def publish_skill(
         llm_reasoning=llm_reasoning,
     )
 
-    # Trigger background agent eval if config and cases are present
     eval_report_status = _maybe_trigger_agent_assessment(
         background_tasks=background_tasks,
         eval_config=eval_config,
@@ -535,17 +459,7 @@ def delete_all_skill_versions(
 
     Only organisation owners and admins can delete skills.
     """
-    org = find_org_by_slug(conn, org_slug)
-    if org is None:
-        raise HTTPException(status_code=404, detail="Organisation not found")
-
-    member = find_org_member(conn, org.id, current_user.id)
-    if member is None or member.role not in ("owner", "admin"):
-        raise HTTPException(
-            status_code=403,
-            detail="Only org owners and admins can delete skills",
-        )
-
+    org = _require_org_membership(conn, org_slug, current_user.id, admin_only=True)
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
         raise HTTPException(
@@ -583,17 +497,7 @@ def delete_skill_version(
 
     Only organisation owners and admins can delete versions.
     """
-    org = find_org_by_slug(conn, org_slug)
-    if org is None:
-        raise HTTPException(status_code=404, detail="Organisation not found")
-
-    member = find_org_member(conn, org.id, current_user.id)
-    if member is None or member.role not in ("owner", "admin"):
-        raise HTTPException(
-            status_code=403,
-            detail="Only org owners and admins can delete versions",
-        )
-
+    org = _require_org_membership(conn, org_slug, current_user.id, admin_only=True)
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
         raise HTTPException(
@@ -620,8 +524,146 @@ def delete_skill_version(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers -- org membership, manifest parsing, gauntlet pipeline
 # ---------------------------------------------------------------------------
+
+
+def _require_org_membership(
+    conn: Connection,
+    org_slug: str,
+    user_id: UUID,
+    *,
+    admin_only: bool = False,
+) -> Organization:
+    """Verify org exists and user is a member; return the Organisation.
+
+    Raises 404 if org not found, 403 if not a member (or not admin
+    when admin_only=True).
+    """
+    org = find_org_by_slug(conn, org_slug)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+
+    member = find_org_member(conn, org.id, user_id)
+    if member is None:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a member of this organisation",
+        )
+    if admin_only and member.role not in ("owner", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only org owners and admins can perform this action",
+        )
+    return org
+
+
+def _parse_manifest_from_content(
+    skill_md_content: str,
+    file_bytes: bytes,
+) -> tuple[dict | None, object | None, tuple]:
+    """Parse SKILL.md and extract runtime config, eval config, and eval cases.
+
+    Uses a temp file because parse_skill_md expects a file path.
+    Returns (runtime_config_dict, eval_config, eval_cases).  Falls back to
+    (None, None, ()) when the manifest is malformed — the gauntlet will
+    catch those issues downstream.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
+        tmp.write(skill_md_content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        manifest = parse_skill_md(tmp_path)
+        return (
+            _extract_runtime_config_dict(manifest),
+            _extract_assessment_config(manifest),
+            _try_parse_assessment_cases(file_bytes),
+        )
+    except ValueError:
+        return None, None, ()
+    finally:
+        tmp_path.unlink()
+
+
+def _run_gauntlet_pipeline(
+    skill_md_content: str,
+    lockfile_content: str | None,
+    source_files: list[tuple[str, str]],
+    skill_name: str,
+    description: str,
+    skill_md_body: str,
+    settings: Settings,
+) -> tuple[GauntletReport, list[dict], dict | None]:
+    """Run Gauntlet static checks and serialize results for audit logging.
+
+    Returns (report, check_results_dicts, llm_reasoning).
+    """
+    report = run_static_checks(
+        skill_md_content,
+        lockfile_content,
+        source_files,
+        skill_name=skill_name,
+        skill_description=description,
+        analyze_fn=_build_analyze_fn(settings),
+        skill_md_body=skill_md_body,
+        allowed_tools=None,
+        analyze_prompt_fn=_build_analyze_prompt_fn(settings),
+        is_verified_org=True,
+    )
+
+    check_results_dicts = [
+        {
+            "check_name": r.check_name,
+            "severity": r.severity,
+            "message": r.message,
+        }
+        for r in report.results
+    ]
+
+    llm_reasoning = {
+        r.check_name: r.details
+        for r in report.results
+        if r.details is not None
+    } or None
+
+    return report, check_results_dicts, llm_reasoning
+
+
+def _quarantine_rejected_skill(
+    conn: Connection,
+    s3_client,
+    bucket: str,
+    file_bytes: bytes,
+    *,
+    org_slug: str,
+    skill_name: str,
+    version: str,
+    report: GauntletReport,
+    check_results: list[dict],
+    llm_reasoning: dict | None,
+    publisher: str,
+) -> None:
+    """Upload rejected zip to quarantine, log the rejection, and raise 422."""
+    q_key = build_quarantine_s3_key(org_slug, skill_name, version)
+    upload_skill_zip(s3_client, bucket, q_key, file_bytes)
+
+    insert_audit_log(
+        conn,
+        org_slug=org_slug,
+        skill_name=skill_name,
+        semver=version,
+        grade=report.grade,
+        check_results=check_results,
+        publisher=publisher,
+        version_id=None,
+        llm_reasoning=llm_reasoning,
+        quarantine_s3_key=q_key,
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=f"Gauntlet checks failed: {report.summary}",
+    )
 
 
 def _build_analyze_fn(settings: Settings):
