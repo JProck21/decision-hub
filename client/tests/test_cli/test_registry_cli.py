@@ -488,6 +488,7 @@ class TestListCommand:
                     "updated_at": "2025-06-01",
                     "safety_rating": "A",
                     "author": "alice",
+                    "download_count": 5,
                 },
             ])
         )
@@ -498,10 +499,12 @@ class TestListCommand:
         assert "Registry:" in result.output
         assert "http://test:8000" in result.output
         assert "Author" in result.output
+        assert "Downloa" in result.output
         assert "acme" in result.output
-        assert "doc-writer" in result.output
+        assert "doc-wri" in result.output
         assert "1.0.0" in result.output
         assert "alice" in result.output
+        assert "5" in result.output
 
     @respx.mock
     @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")

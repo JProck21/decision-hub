@@ -428,12 +428,14 @@ class TestPublishSkill:
 class TestResolveSkill:
     """GET /v1/resolve/{org_slug}/{skill_name} -- resolve a skill version."""
 
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
     @patch("decision_hub.api.registry_routes.generate_presigned_url")
     @patch("decision_hub.api.registry_routes.resolve_version")
     def test_resolve_success(
         self,
         mock_resolve: MagicMock,
         mock_presign: MagicMock,
+        mock_increment: MagicMock,
         client: TestClient,
     ) -> None:
         """Resolving latest should return version info and a download URL."""
@@ -451,11 +453,15 @@ class TestResolveSkill:
         assert data["version"] == "2.1.0"
         assert data["download_url"] == "https://s3.example.com/presigned-url"
         assert data["checksum"] == version.checksum
+        mock_increment.assert_called_once()
+        assert mock_increment.call_args[0][1] == version.skill_id
 
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
     @patch("decision_hub.api.registry_routes.resolve_version")
     def test_resolve_not_found(
         self,
         mock_resolve: MagicMock,
+        mock_increment: MagicMock,
         client: TestClient,
     ) -> None:
         """Resolving a non-existent version should return 404."""
@@ -465,13 +471,16 @@ class TestResolveSkill:
 
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
+        mock_increment.assert_not_called()
 
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
     @patch("decision_hub.api.registry_routes.generate_presigned_url")
     @patch("decision_hub.api.registry_routes.resolve_version")
     def test_resolve_with_specific_version(
         self,
         mock_resolve: MagicMock,
         mock_presign: MagicMock,
+        mock_increment: MagicMock,
         client: TestClient,
     ) -> None:
         """Resolving with an exact semver spec should pass it through."""
@@ -496,12 +505,14 @@ class TestResolveSkill:
         assert call_args[0][2] == "my-skill"  # skill_name
         assert call_args[0][3] == "1.2.3"  # spec
 
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
     @patch("decision_hub.api.registry_routes.generate_presigned_url")
     @patch("decision_hub.api.registry_routes.resolve_version")
     def test_resolve_does_not_require_auth(
         self,
         mock_resolve: MagicMock,
         mock_presign: MagicMock,
+        mock_increment: MagicMock,
         client: TestClient,
     ) -> None:
         """Resolve endpoint should work without authentication headers."""
@@ -517,12 +528,14 @@ class TestResolveSkill:
 
         assert resp.status_code == 200
 
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
     @patch("decision_hub.api.registry_routes.generate_presigned_url")
     @patch("decision_hub.api.registry_routes.resolve_version")
     def test_resolve_with_allow_risky(
         self,
         mock_resolve: MagicMock,
         mock_presign: MagicMock,
+        mock_increment: MagicMock,
         client: TestClient,
     ) -> None:
         """Resolve with allow_risky=true passes the flag through."""
@@ -851,6 +864,7 @@ class TestListSkills:
                 "org_slug": "acme",
                 "skill_name": "doc-writer",
                 "description": "Writes documentation",
+                "download_count": 42,
                 "latest_version": "1.2.0",
                 "eval_status": "A",
                 "created_at": datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -871,6 +885,7 @@ class TestListSkills:
         assert skill["updated_at"] == "2025-06-01 12:00:00"
         assert skill["safety_rating"] == "A"
         assert skill["author"] == "alice"
+        assert skill["download_count"] == 42
 
     @patch("decision_hub.api.registry_routes.fetch_all_skills_for_index")
     def test_list_skills_safety_rating(
@@ -884,6 +899,7 @@ class TestListSkills:
                 "org_slug": "org1",
                 "skill_name": "safe-skill",
                 "description": "",
+                "download_count": 0,
                 "latest_version": "1.0.0",
                 "eval_status": "A",
                 "created_at": None,
@@ -893,6 +909,7 @@ class TestListSkills:
                 "org_slug": "org2",
                 "skill_name": "verified-skill",
                 "description": "",
+                "download_count": 0,
                 "latest_version": "0.1.0",
                 "eval_status": "B",
                 "created_at": None,
@@ -902,6 +919,7 @@ class TestListSkills:
                 "org_slug": "org3",
                 "skill_name": "risky-skill",
                 "description": "",
+                "download_count": 0,
                 "latest_version": "2.0.0",
                 "eval_status": "C",
                 "created_at": None,
@@ -911,6 +929,7 @@ class TestListSkills:
                 "org_slug": "org4",
                 "skill_name": "legacy-skill",
                 "description": "",
+                "download_count": 0,
                 "latest_version": "1.0.0",
                 "eval_status": "passed",
                 "created_at": None,

@@ -298,6 +298,7 @@ def list_command() -> None:
     table.add_column("Version")
     table.add_column("Updated")
     table.add_column("Safety")
+    table.add_column("Downloads")
     table.add_column("Author")
     table.add_column("Description")
 
@@ -311,6 +312,7 @@ def list_command() -> None:
             s["latest_version"],
             s.get("updated_at", ""),
             f"[{rating_style}]{rating}[/]",
+            str(s.get("download_count", 0)),
             s.get("author", ""),
             s.get("description", ""),
         )

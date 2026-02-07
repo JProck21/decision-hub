@@ -39,6 +39,7 @@ class Skill:
     org_id: UUID
     name: str
     description: str
+    download_count: int = 0
 
 
 @dataclass(frozen=True)

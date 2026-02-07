@@ -107,6 +107,7 @@ skills_table = Table(
     ),
     Column("name", String, nullable=False),
     Column("description", Text, nullable=False, server_default=""),
+    Column("download_count", sa.Integer, nullable=False, server_default="0"),
     sa.UniqueConstraint("org_id", "name"),
 )
 
@@ -277,7 +278,7 @@ def _row_to_org_member(row: sa.Row) -> OrgMember:
 
 def _row_to_skill(row: sa.Row) -> Skill:
     """Map a database row to a Skill model."""
-    return Skill(id=row.id, org_id=row.org_id, name=row.name, description=row.description)
+    return Skill(id=row.id, org_id=row.org_id, name=row.name, description=row.description, download_count=row.download_count)
 
 
 def _row_to_version(row: sa.Row) -> Version:
@@ -560,6 +561,16 @@ def update_skill_description(
         sa.update(skills_table)
         .where(skills_table.c.id == skill_id)
         .values(description=description)
+    )
+    conn.execute(stmt)
+
+
+def increment_skill_downloads(conn: Connection, skill_id: UUID) -> None:
+    """Atomically increment the download counter for a skill."""
+    stmt = (
+        sa.update(skills_table)
+        .where(skills_table.c.id == skill_id)
+        .values(download_count=skills_table.c.download_count + 1)
     )
     conn.execute(stmt)
 
@@ -913,6 +924,7 @@ def fetch_all_skills_for_index(conn: Connection) -> list[dict]:
             organizations_table.c.slug.label("org_slug"),
             skills_table.c.name.label("skill_name"),
             skills_table.c.description,
+            skills_table.c.download_count,
             latest_version.c.semver.label("latest_version"),
             latest_version.c.eval_status,
             latest_version.c.created_at,
@@ -938,6 +950,7 @@ def fetch_all_skills_for_index(conn: Connection) -> list[dict]:
             "org_slug": row.org_slug,
             "skill_name": row.skill_name,
             "description": row.description,
+            "download_count": row.download_count,
             "latest_version": row.latest_version,
             "eval_status": row.eval_status,
             "created_at": row.created_at,

@@ -33,6 +33,7 @@ from decision_hub.infra.database import (
     find_org_member,
     find_skill,
     find_version,
+    increment_skill_downloads,
     insert_audit_log,
     insert_eval_report,
     insert_skill,
@@ -105,6 +106,7 @@ class SkillSummary(BaseModel):
     updated_at: str
     safety_rating: str
     author: str
+    download_count: int = 0
 
 
 class AuditLogResponse(BaseModel):
@@ -312,6 +314,7 @@ def list_skills(
             updated_at=row["created_at"].strftime("%Y-%m-%d %H:%M:%S") if row.get("created_at") else "",
             safety_rating=format_trust_score(row["eval_status"]),
             author=row.get("published_by", ""),
+            download_count=row.get("download_count", 0),
         )
         for row in rows
     ]
@@ -363,6 +366,8 @@ def resolve_skill(
             status_code=404,
             detail=f"Version '{spec}' not found for {org_slug}/{skill_name}",
         )
+
+    increment_skill_downloads(conn, version.skill_id)
 
     download_url = generate_presigned_url(
         s3_client,
