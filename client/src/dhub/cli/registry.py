@@ -300,7 +300,10 @@ def _create_zip(path: Path) -> bytes:
 
 def list_command() -> None:
     """List all published skills on the registry."""
+    from dhub.cli.banner import check_and_show_update, print_banner
     from dhub.cli.config import build_headers, get_api_url, get_token
+
+    print_banner(console)
 
     api_url = get_api_url()
 
@@ -344,6 +347,8 @@ def list_command() -> None:
         )
 
     console.print(table)
+
+    check_and_show_update(console)
 
 
 def delete_command(
