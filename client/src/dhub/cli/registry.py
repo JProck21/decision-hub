@@ -319,6 +319,7 @@ def list_command() -> None:
 
     if not skills:
         console.print("No skills published yet.")
+        check_and_show_update(console)
         return
 
     table = Table(title="Published Skills", show_lines=True)
