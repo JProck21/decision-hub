@@ -8,6 +8,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+_GIT_URL_PREFIXES = ("https://", "http://", "git@", "ssh://", "git://")
+
+
+def looks_like_git_url(value: str) -> bool:
+    """Return True if *value* looks like a git-cloneable URL rather than a local path or org/skill ref."""
+    if any(value.startswith(prefix) for prefix in _GIT_URL_PREFIXES):
+        return True
+    if value.endswith(".git"):
+        return True
+    return False
+
 
 def clone_repo(repo_url: str, ref: str | None = None) -> Path:
     """Clone a git repository into a temporary directory.

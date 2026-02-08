@@ -20,8 +20,7 @@ dhub login              Authenticate via GitHub
 dhub logout             Remove stored token
 dhub env                Show active environment, config path, API URL
 dhub init [path]        Scaffold a new skill project
-dhub publish [ref]      Publish a skill to the registry
-dhub publish-repo URL   Publish all skills from a git repo
+dhub publish [ref]      Publish skill(s) — from dir or git repo
 dhub install org/skill  Install a skill from the registry
 dhub uninstall org/skill  Remove a locally installed skill
 dhub list               List all published skills
@@ -125,15 +124,15 @@ The publish command creates a zip of the skill directory, excluding:
 
 ## Publishing from a Git Repository
 
-Publish all skills found in a git repository in one command:
+You can pass a git URL directly to `dhub publish`:
 
 ```bash
-dhub publish-repo https://github.com/myorg/my-skills-repo
-dhub publish-repo git@github.com:myorg/my-skills-repo.git --ref v2.0
-dhub publish-repo https://github.com/myorg/repo --org myorg --minor
+dhub publish https://github.com/myorg/my-skills-repo
+dhub publish git@github.com:myorg/my-skills-repo.git --ref v2.0
+dhub publish https://github.com/myorg/repo --minor
 ```
 
-The command clones the repository, recursively discovers all directories containing a valid SKILL.md, and publishes each one. This is useful for monorepos containing multiple skills.
+The command detects that the argument is a git URL (HTTPS, SSH, or `.git` suffix), clones the repository, recursively discovers all directories containing a valid SKILL.md, and publishes each one. This is useful for monorepos containing multiple skills.
 
 ### How discovery works
 
@@ -143,12 +142,9 @@ The command clones the repository, recursively discovers all directories contain
 4. Each `SKILL.md` is validated — only directories with valid frontmatter (name + description) are published
 5. Skills are published one by one; failures don't stop the remaining skills
 
-### Options
+### Git-specific options
 
-- `--org` — target namespace (auto-detected if you belong to one)
-- `--ref` — branch, tag, or commit to checkout
-- `--version` — explicit semver for all skills
-- `--patch` / `--minor` / `--major` — version bump level (default: patch)
+- `--ref` — branch, tag, or commit to checkout (only valid with git URLs)
 
 ## Installing Skills
 

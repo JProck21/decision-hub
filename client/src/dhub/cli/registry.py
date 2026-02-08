@@ -111,7 +111,7 @@ def _publish_skill_directory(
 
 def publish_command(
     skill_ref: str = typer.Argument(
-        None, help="Skill name (e.g. 'myorg/my-skill')"
+        None, help="Skill ref (org/skill), path, or git URL"
     ),
     path: Path = typer.Argument(
         None, help="Path to the skill directory (default: current dir)"
@@ -120,20 +120,46 @@ def publish_command(
     patch: bool = typer.Option(False, "--patch", help="Bump patch version"),
     minor: bool = typer.Option(False, "--minor", help="Bump minor version"),
     major: bool = typer.Option(False, "--major", help="Bump major version"),
+    ref: str = typer.Option(None, "--ref", help="Branch/tag/commit (only for git repo URLs)"),
 ) -> None:
     """Publish a skill to the registry.
 
-    When ORG/SKILL is omitted, the skill name is read from SKILL.md and the
-    org is auto-detected (requires membership in exactly one org).
+    The first argument can be:
+    - A git repository URL (HTTPS/SSH) — clones the repo, discovers all
+      skills, and publishes each one
+    - An org/skill reference (e.g. 'myorg/my-skill')
+    - A path to a local skill directory
+    - Omitted — publishes from the current directory
 
     Version is auto-bumped by default (patch). Use --major or --minor to
     control the bump level, or --version to set an explicit version.
     """
-    from dhub.cli.config import get_api_url, get_token
-    from dhub.core.manifest import parse_skill_md
+    from dhub.core.git_repo import looks_like_git_url
 
     # Validate flags early (before auth) to fail fast on bad input
     bump_level = _resolve_bump_level(patch, minor, major)
+
+    # Detect git URL in the first positional arg
+    if skill_ref is not None and looks_like_git_url(skill_ref):
+        _publish_from_git_repo(skill_ref, ref, version, bump_level)
+        return
+
+    if ref is not None:
+        console.print("[red]Error: --ref can only be used with a git repository URL.[/]")
+        raise typer.Exit(1)
+
+    _publish_from_directory(skill_ref, path, version, bump_level)
+
+
+def _publish_from_directory(
+    skill_ref: str | None,
+    path: Path | None,
+    version: str | None,
+    bump_level: str,
+) -> None:
+    """Publish a single skill from a local directory."""
+    from dhub.cli.config import get_api_url, get_token
+    from dhub.core.manifest import parse_skill_md
 
     # Disambiguate positional args: if skill_ref looks like a filesystem path
     # (starts with '.', '/', '~', or is an existing directory) rather than
@@ -148,7 +174,7 @@ def publish_command(
     if path is None:
         path = Path(".")
 
-    # Verify the directory contains a SKILL.md manifest (needed for both auto-detect and validation)
+    # Verify the directory contains a SKILL.md manifest
     skill_md_path = path / "SKILL.md"
     if not skill_md_path.exists():
         console.print(
@@ -188,33 +214,21 @@ def publish_command(
         return
 
 
-def publish_repo_command(
-    repo_url: str = typer.Argument(help="Git repository URL (HTTPS or SSH)"),
-    org: str = typer.Option(None, "--org", help="Target org/namespace (auto-detected if you belong to one)"),
-    ref: str = typer.Option(None, "--ref", help="Branch, tag, or commit to checkout"),
-    version: str = typer.Option(None, "--version", help="Explicit semver version for all skills"),
-    patch: bool = typer.Option(False, "--patch", help="Bump patch version"),
-    minor: bool = typer.Option(False, "--minor", help="Bump minor version"),
-    major: bool = typer.Option(False, "--major", help="Bump major version"),
+def _publish_from_git_repo(
+    repo_url: str,
+    ref: str | None,
+    version: str | None,
+    bump_level: str,
 ) -> None:
-    """Publish skills from a git repository.
-
-    Clones the repository, discovers all directories containing a valid
-    SKILL.md, and publishes each one to the registry.
-    """
+    """Clone a git repo, discover skills, and publish each one."""
     from dhub.cli.config import get_api_url, get_token
     from dhub.core.git_repo import clone_repo, discover_skills
-
-    # Validate flags early (before auth/clone) to fail fast on bad input
-    bump_level = _resolve_bump_level(patch, minor, major)
+    from dhub.core.manifest import parse_skill_md
 
     api_url = get_api_url()
     token = get_token()
+    org = _auto_detect_org(api_url, token)
 
-    if org is None:
-        org = _auto_detect_org(api_url, token)
-
-    # Clone
     with console.status(f"Cloning {repo_url}..."):
         try:
             repo_root = clone_repo(repo_url, ref=ref)
@@ -223,7 +237,6 @@ def publish_repo_command(
             raise typer.Exit(1)
 
     try:
-        # Discover skills
         skill_dirs = discover_skills(repo_root)
 
         if not skill_dirs:
@@ -235,9 +248,6 @@ def publish_repo_command(
             rel = skill_dir.relative_to(repo_root)
             console.print(f"  - {rel}")
         console.print()
-
-        # Publish each skill
-        from dhub.core.manifest import parse_skill_md
 
         published = 0
         failed = 0
