@@ -85,13 +85,14 @@ uv run --package dhub pytest client/tests/ && uv run --package decision-hub-serv
 
 ## Design Principles
 
-- **Single responsibility**: Small, single-purpose functions with one clear reason to change - **Clear interfaces**: Descriptive names, type hints, explicit signatures -
-obvious inputs, outputs, and behavior - **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external
-services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture -
-**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8 - **YAGNI**: No abstractions or features "just in case" - add complexity
-only for concrete needs - **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort - **Don't
-worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks - **DRY** do not repeat yourself
-refactor the code an ensure ## Data Flow
+- **Single responsibility**: Small, single-purpose functions with one clear reason to change 
+- **Clear interfaces**: Descriptive names, type hints, explicit signatures - obvious inputs, outputs, and behavior 
+- **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture 
+-**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8 
+- **YAGNI**: No abstractions or features "just in case" - add complexity only for concrete needs 
+- **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort 
+- **Don't worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks 
+- **DRY** do not repetat yourself, refactor the code and ensure each piece of logic has a single, clear, authoritative implementation instead of being duplicated across the codebase
 
 
 ## Client / Server Version Sync
@@ -161,7 +162,6 @@ After implementing significant changes, always check if the README.md needs upda
 - Changes to setup/configuration requirements
 - Architectural changes that affect how the system works
 
-Do NOT document implementation details - only high-level features and usage.
 
 ## dhub CLI Skill
 
