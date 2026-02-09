@@ -15,7 +15,8 @@ const GRADE_CONFIG: Record<string, { label: string; color: string }> = {
 
 export default function GradeBadge({ grade, size = "md" }: GradeBadgeProps) {
   // The API returns safety_rating as formatted strings like "A  Safe"
-  const gradeKey = grade.trim().charAt(0).toUpperCase();
+  const trimmed = grade.trim().toLowerCase();
+  const gradeKey = trimmed === "pending" ? "pending" : trimmed.charAt(0).toUpperCase();
   const config = GRADE_CONFIG[gradeKey] ?? { label: grade, color: "muted" };
 
   return (

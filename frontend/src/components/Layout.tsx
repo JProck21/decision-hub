@@ -27,7 +27,7 @@ export default function Layout() {
                 key={path}
                 to={path}
                 className={`${styles.navLink} ${
-                  location.pathname === path ? styles.navLinkActive : ""
+                  (path === "/" ? location.pathname === "/" : location.pathname.startsWith(path)) ? styles.navLinkActive : ""
                 }`}
               >
                 <Icon size={16} />
