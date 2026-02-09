@@ -65,6 +65,7 @@ from decision_hub.settings import Settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["registry"])
+public_router = APIRouter(prefix="/v1", tags=["registry"])
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +336,7 @@ def publish_skill(
     )
 
 
-@router.get("/skills", response_model=list[SkillSummary])
+@public_router.get("/skills", response_model=list[SkillSummary])
 def list_skills(
     conn: Connection = Depends(get_connection),
 ) -> list[SkillSummary]:
@@ -357,7 +358,7 @@ def list_skills(
     ]
 
 
-@router.get(
+@public_router.get(
     "/skills/{org_slug}/{skill_name}/latest-version",
     response_model=LatestVersionResponse,
 )
@@ -411,7 +412,7 @@ def resolve_skill(
     )
 
 
-@router.get("/skills/{org_slug}/{skill_name}/download")
+@public_router.get("/skills/{org_slug}/{skill_name}/download")
 def download_skill(
     org_slug: str,
     skill_name: str,
@@ -439,7 +440,7 @@ def download_skill(
     )
 
 
-@router.get(
+@public_router.get(
     "/skills/{org_slug}/{skill_name}/audit-log",
     response_model=list[AuditLogResponse],
 )
@@ -469,7 +470,7 @@ def get_audit_log(
     ]
 
 
-@router.get(
+@public_router.get(
     "/skills/{org_slug}/{skill_name}/eval-report",
     response_model=EvalReportResponse | None,
 )
@@ -486,7 +487,7 @@ def get_eval_report_by_skill(
     return _report_to_response(report)
 
 
-@router.get(
+@public_router.get(
     "/skills/{org_slug}/{skill_name}/versions/{semver}/eval-report",
     response_model=EvalReportResponse | None,
 )
