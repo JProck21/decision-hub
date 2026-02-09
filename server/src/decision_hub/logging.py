@@ -30,8 +30,9 @@ class _InterceptHandler(logging.Handler):
         except ValueError:
             level = record.levelno
 
-        # Find the caller frame that originated the log call
-        frame, depth = logging.currentframe(), 0
+        # Find the caller frame that originated the log call.
+        # Start at depth=2 to skip emit() and loguru's internal log() frame.
+        frame, depth = logging.currentframe(), 2
         while frame is not None:
             if frame.f_code.co_filename == logging.__file__:
                 frame = frame.f_back

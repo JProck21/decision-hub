@@ -124,10 +124,9 @@ async def exchange_token(
         gh_orgs = await github_list_user_orgs(gh_token)
         github_org_logins = [o["login"] for o in gh_orgs]
     except Exception:
-        logger.warning(
+        logger.opt(exception=True).warning(
             "Failed to fetch GitHub orgs for {}; falling back to personal namespace only",
             username,
-            exc_info=True,
         )
 
     org_slugs = sync_user_orgs(conn, user.id, github_org_logins, username)

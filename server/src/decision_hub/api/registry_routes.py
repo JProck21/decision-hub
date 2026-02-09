@@ -242,6 +242,7 @@ def publish_skill(
     try:
         skill_md_content, source_files, lockfile_content = extract_for_evaluation(file_bytes)
     except ValueError as exc:
+        logger.warning("Skill extraction failed for {}/{} v{}: {}", org_slug, skill_name, version, exc)
         raise HTTPException(status_code=422, detail=str(exc))
 
     runtime_config_dict, eval_config, eval_cases = parse_manifest_from_content(
