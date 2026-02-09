@@ -9,6 +9,7 @@ export interface SkillSummary {
   safety_rating: string;
   author: string;
   download_count: number;
+  is_personal_org: boolean;
 }
 
 export interface OrgSummary {

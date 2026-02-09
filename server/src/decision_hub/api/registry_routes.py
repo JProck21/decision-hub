@@ -120,6 +120,7 @@ class SkillSummary(BaseModel):
     safety_rating: str
     author: str
     download_count: int = 0
+    is_personal_org: bool = False
 
 
 class AuditLogResponse(BaseModel):
@@ -350,6 +351,7 @@ def list_skills(
             safety_rating=format_trust_score(row["eval_status"]),
             author=row.get("published_by", ""),
             download_count=row.get("download_count", 0),
+            is_personal_org=row.get("is_personal_org", False),
         )
         for row in rows
     ]
