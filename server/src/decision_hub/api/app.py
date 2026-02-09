@@ -3,11 +3,13 @@
 import json as _json
 
 from fastapi import Depends, FastAPI
+from loguru import logger
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from decision_hub.api.deps import get_current_user
 from decision_hub.infra.database import create_engine
 from decision_hub.infra.storage import create_s3_client
+from decision_hub.logging import setup_logging
 from decision_hub.settings import create_settings
 
 
@@ -86,6 +88,7 @@ def create_app() -> FastAPI:
         A fully-configured FastAPI instance.
     """
     settings = create_settings()
+    setup_logging(settings.log_level)
 
     engine = create_engine(settings.database_url)
 
@@ -132,4 +135,5 @@ def create_app() -> FastAPI:
     app.include_router(keys_router, dependencies=global_deps)
     app.include_router(search_router, dependencies=global_deps)
 
+    logger.info("Decision Hub app ready (log_level={})", settings.log_level)
     return app

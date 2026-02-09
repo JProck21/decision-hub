@@ -1,11 +1,11 @@
 """Skill registry routes -- publish, resolve, and delete."""
 
 import json
-import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
 
@@ -60,8 +60,6 @@ from decision_hub.infra.storage import (
 )
 from decision_hub.models import User
 from decision_hub.settings import Settings
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["registry"])
 
@@ -213,6 +211,7 @@ def publish_skill(
     current_user: User = Depends(get_current_user),
 ) -> PublishResponse:
     """Publish a new skill version."""
+    logger.info("Publish request from user={}", current_user.username)
     if not settings.google_api_key:
         raise HTTPException(
             status_code=503,
@@ -223,6 +222,7 @@ def publish_skill(
     org_slug, skill_name, version = meta["org_slug"], meta["skill_name"], meta["version"]
     validate_skill_name(skill_name)
     validate_semver(version)
+    logger.info("Publishing {}/{} v{} by {}", org_slug, skill_name, version, current_user.username)
 
     org = require_org_membership(conn, org_slug, current_user.id)
 
@@ -252,6 +252,7 @@ def publish_skill(
         skill_md_content, lockfile_content, source_files,
         skill_name, description, skill_md_body, settings,
     )
+    logger.info("Gauntlet result for {}/{} v{}: grade={} passed={}", org_slug, skill_name, version, report.grade, report.passed)
 
     if not report.passed:
         quarantine_rejected_skill(
@@ -321,6 +322,10 @@ def publish_skill(
         user_id=current_user.id,
     )
 
+    logger.info(
+        "Published {}/{} v{} — version_id={} grade={} eval_run={}",
+        org_slug, skill_name, version, version_record.id, eval_status, eval_run_id,
+    )
     return PublishResponse(
         skill_id=str(skill.id),
         version_id=str(version_record.id),
@@ -384,6 +389,7 @@ def resolve_skill(
     settings: Settings = Depends(get_settings),
 ) -> ResolveResponse:
     """Resolve a skill version and return a pre-signed download URL."""
+    logger.debug("Resolving {}/{} spec={}", org_slug, skill_name, spec)
     version = resolve_version(
         conn, org_slug, skill_name, spec, allow_risky=allow_risky,
     )
@@ -485,6 +491,7 @@ def delete_all_skill_versions(
     current_user: User = Depends(get_current_user),
 ) -> DeleteAllResponse:
     """Delete all versions of a skill and the skill record itself."""
+    logger.info("Delete all versions of {}/{} by {}", org_slug, skill_name, current_user.username)
     org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
@@ -520,6 +527,7 @@ def delete_skill_version(
     current_user: User = Depends(get_current_user),
 ) -> DeleteResponse:
     """Delete a published skill version."""
+    logger.info("Delete {}/{} v{} by {}", org_slug, skill_name, version, current_user.username)
     org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
