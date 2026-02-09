@@ -163,11 +163,11 @@ dhub install myorg/my-skill --allow-risky             # allow Grade C skills
 
 | Agent | Symlink Location |
 |-------|-----------------|
-| claude | `~/.claude/skills/{org}--{skill}` |
-| cursor | `~/.cursor/skills/{org}--{skill}` |
-| codex | `~/.codex/skills/{org}--{skill}` |
-| opencode | `~/.config/opencode/skills/{org}--{skill}` |
-| gemini | `~/.gemini/skills/{org}--{skill}` |
+| claude | `~/.claude/skills/{skill}` |
+| cursor | `~/.cursor/skills/{skill}` |
+| codex | `~/.codex/skills/{skill}` |
+| opencode | `~/.config/opencode/skills/{skill}` |
+| gemini | `~/.gemini/skills/{skill}` |
 
 Symlinks point to the canonical `~/.dhub/skills/` path, so the skill is stored once and shared across agents.
 

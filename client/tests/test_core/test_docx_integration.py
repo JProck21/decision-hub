@@ -259,13 +259,10 @@ class TestInstallPathResolution:
         assert path == Path.home() / ".dhub" / "skills" / "example-org" / "docx"
 
     def test_agent_skill_symlink_naming(self) -> None:
-        """Symlinks are named {org}--{skill} in the agent skill directory."""
-        org = "example-org"
+        """Symlinks are named {skill} in the agent skill directory."""
         skill = "docx"
-        expected_symlink_name = f"{org}--{skill}"
-        assert expected_symlink_name == "example-org--docx"
 
-        # Verify this pattern is used in AGENT_SKILL_PATHS context
+        # Verify the symlink name is just the skill name
         for agent, agent_dir in AGENT_SKILL_PATHS.items():
-            expected_path = agent_dir / expected_symlink_name
-            assert expected_path.name == "example-org--docx"
+            expected_path = agent_dir / skill
+            assert expected_path.name == "docx"

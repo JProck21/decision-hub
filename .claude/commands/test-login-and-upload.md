@@ -63,9 +63,9 @@ DHUB_ENV=dev uv run --package dhub-cli dhub install pymc-labs/e2e-test-skill --a
 ```
 Expected output mentions:
 - Installed to `~/.dhub/skills/pymc-labs/e2e-test-skill`
-- Linked to codex at `~/.codex/skills/pymc-labs--e2e-test-skill`
+- Linked to codex at `~/.codex/skills/e2e-test-skill`
 
-Verify the symlink exists: `ls -la ~/.codex/skills/pymc-labs--e2e-test-skill`
+Verify the symlink exists: `ls -la ~/.codex/skills/e2e-test-skill`
 
 ### 7. Uninstall
 ```bash
@@ -73,7 +73,7 @@ DHUB_ENV=dev uv run --package dhub-cli dhub uninstall pymc-labs/e2e-test-skill
 ```
 Expected: `Uninstalled pymc-labs/e2e-test-skill` and `Removed symlinks from: codex`
 
-Verify symlink is gone: `ls ~/.codex/skills/pymc-labs--e2e-test-skill` should fail with "No such file"
+Verify symlink is gone: `ls ~/.codex/skills/e2e-test-skill` should fail with "No such file"
 
 ### 8. Delete from registry
 ```bash

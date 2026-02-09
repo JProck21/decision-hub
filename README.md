@@ -151,11 +151,11 @@ Skills are installed as symlinks into each agent's skill directory:
 
 | Agent | Skill path |
 |-------|-----------|
-| Claude | `~/.claude/skills/{org}--{skill}` |
-| Cursor | `~/.cursor/skills/{org}--{skill}` |
-| Codex | `~/.codex/skills/{org}--{skill}` |
-| OpenCode | `~/.config/opencode/skills/{org}--{skill}` |
-| Gemini | `~/.gemini/skills/{org}--{skill}` |
+| Claude | `~/.claude/skills/{skill}` |
+| Cursor | `~/.cursor/skills/{skill}` |
+| Codex | `~/.codex/skills/{skill}` |
+| OpenCode | `~/.config/opencode/skills/{skill}` |
+| Gemini | `~/.gemini/skills/{skill}` |
 
 Use `--agent claude` (or `cursor`, `codex`, `opencode`, `gemini`, `all`) with `dhub install` to target specific agents. By default, all detected agents are linked.
 

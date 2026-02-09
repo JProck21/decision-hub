@@ -152,7 +152,7 @@ dhub install ORG/SKILL [--version VER] [--agent AGENT] [--allow-risky]
 4. Extract to `~/.dhub/skills/{org}/{skill}/`
 5. Create agent symlinks if `--agent` specified
 
-**Symlink naming:** `{org}--{skill}` in the agent's skill directory.
+**Symlink naming:** `{skill}` in the agent's skill directory.
 
 ---
 

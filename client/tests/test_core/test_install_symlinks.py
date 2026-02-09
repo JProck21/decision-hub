@@ -70,7 +70,7 @@ class TestLinkSkillToAgent:
 
         assert symlink.is_symlink()
         assert symlink.resolve() == canonical_skill_dir.resolve()
-        assert symlink.name == "myorg--myskill"
+        assert symlink.name == "myskill"
 
     @pytest.mark.usefixtures("_mock_dhub_path")
     def test_creates_parent_dirs(
@@ -142,7 +142,7 @@ class TestLinkSkillToAllAgents:
 
         # Verify all symlinks exist
         for agent in linked:
-            symlink = install.AGENT_SKILL_PATHS[agent] / "myorg--myskill"
+            symlink = install.AGENT_SKILL_PATHS[agent] / "myskill"
             assert symlink.is_symlink()
             assert symlink.resolve() == canonical_skill_dir.resolve()
 

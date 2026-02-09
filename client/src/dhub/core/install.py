@@ -62,7 +62,7 @@ def get_agent_skill_paths() -> dict[str, Path]:
 def link_skill_to_agent(org: str, skill_name: str, agent: str) -> Path:
     """Create a symlink from the agent's skill directory to the canonical skill path.
 
-    The symlink is named {org}--{skill_name} inside the agent's skill directory,
+    The symlink is named {skill_name} inside the agent's skill directory,
     and points to the canonical path under ~/.dhub/skills/{org}/{skill_name}/.
 
     Args:
@@ -91,7 +91,7 @@ def link_skill_to_agent(org: str, skill_name: str, agent: str) -> Path:
     agent_dir = AGENT_SKILL_PATHS[agent]
     agent_dir.mkdir(parents=True, exist_ok=True)
 
-    symlink_path = agent_dir / f"{org}--{skill_name}"
+    symlink_path = agent_dir / skill_name
 
     # Remove existing symlink if present to allow re-linking
     if symlink_path.is_symlink() or symlink_path.exists():
@@ -118,7 +118,7 @@ def unlink_skill_from_agent(org: str, skill_name: str, agent: str) -> None:
             f"Unknown agent '{agent}'. Known agents: {', '.join(sorted(AGENT_SKILL_PATHS))}."
         )
 
-    symlink_path = AGENT_SKILL_PATHS[agent] / f"{org}--{skill_name}"
+    symlink_path = AGENT_SKILL_PATHS[agent] / skill_name
 
     if not symlink_path.is_symlink() and not symlink_path.exists():
         raise FileNotFoundError(
@@ -159,7 +159,7 @@ def list_linked_agents(org: str, skill_name: str) -> list[str]:
     linked: list[str] = []
 
     for agent, agent_dir in sorted(AGENT_SKILL_PATHS.items()):
-        symlink_path = agent_dir / f"{org}--{skill_name}"
+        symlink_path = agent_dir / skill_name
         if symlink_path.is_symlink() and symlink_path.resolve() == canonical.resolve():
             linked.append(agent)
 
