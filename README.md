@@ -90,6 +90,7 @@ dhub config default-org
 | `dhub run ORG/SKILL [ARGS...]` | Run a locally installed skill using its configured runtime |
 | `dhub ask QUERY` | Search for skills using natural language |
 | `dhub eval-report ORG/SKILL@VERSION` | View the agent evaluation report for a skill version |
+| `dhub logs [SKILL_REF] [--follow]` | View or tail eval run logs in real-time |
 
 ### Publish options
 

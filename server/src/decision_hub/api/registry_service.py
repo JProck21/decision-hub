@@ -289,28 +289,49 @@ def maybe_trigger_agent_assessment(
     skill_name: str,
     settings: Settings,
     user_id,
-):
-    """Conditionally trigger background agent evaluation if eval config present.
+) -> tuple[str | None, str | None]:
+    """Conditionally trigger background agent assessment if config present.
 
-    Uses Modal's ``Function.spawn()`` so the eval runs in its own container,
-    fully independent of the web server's lifecycle.  The caller must commit
-    the version row before calling this function.
+    Creates an eval_run row BEFORE spawning the Modal function, so the
+    CLI can immediately start tailing logs.
 
-    Passes the S3 key (not the raw zip bytes) to the Modal function, so
-    the 50 MB payload is fetched from S3 inside the eval container instead
-    of being serialized through Modal's parameter transport.
+    Uses a fresh DB connection because the caller's engine.begin()
+    transaction is already committed and closed.
 
-    Raises HTTPException(422) if eval config is declared in the manifest
-    but no valid eval case files were found — prevents bypassing the eval
-    pipeline by omitting case files while keeping the config.
+    Returns (eval_report_status, eval_run_id) — both None if no assessment config.
+
+    Raises HTTPException(422) if config is declared but no case files found.
     """
     if eval_config and not eval_cases:
         raise HTTPException(
             status_code=422,
-            detail="Eval config declared in manifest but no eval case files found in evals/",
+            detail="Assessment config declared in manifest but no case files found in assessments/",
         )
     if eval_config and eval_cases:
         import modal
+
+        from decision_hub.infra.database import create_engine, insert_eval_run
+
+        # Use a fresh connection — the caller's transaction is already closed
+        # after the explicit conn.commit() that makes the version row visible.
+        # Generate the run ID client-side so the S3 prefix is known before insert.
+        from uuid import uuid4
+        run_uuid = uuid4()
+        log_s3_prefix = f"eval-logs/{run_uuid}/"
+
+        engine = create_engine(settings.database_url)
+        with engine.connect() as eval_conn:
+            eval_run = insert_eval_run(
+                eval_conn,
+                run_id=run_uuid,
+                version_id=version_id,
+                user_id=user_id,
+                agent=eval_config.agent,
+                judge_model=eval_config.judge_model,
+                total_cases=len(eval_cases),
+                log_s3_prefix=log_s3_prefix,
+            )
+            eval_conn.commit()
 
         # Serialize EvalCase dataclasses to dicts for Modal transport
         cases_dicts = [
@@ -329,6 +350,7 @@ def maybe_trigger_agent_assessment(
         )
         run_eval.spawn(
             version_id=str(version_id),
+            eval_run_id=str(eval_run.id),
             eval_agent=eval_config.agent,
             eval_judge_model=eval_config.judge_model,
             eval_cases_dicts=cases_dicts,
@@ -338,24 +360,29 @@ def maybe_trigger_agent_assessment(
             skill_name=skill_name,
             user_id=str(user_id),
         )
-        return "pending"
-    return None
+        return "pending", str(eval_run.id)
+    return None, None
 
 
 def run_assessment_background(
     version_id,
-    eval_config,
-    eval_cases: tuple,
+    assessment_config,
+    assessment_cases: tuple,
     skill_zip: bytes,
     org_slug: str,
     skill_name: str,
     settings: Settings,
     user_id,
+    run_id=None,
 ):
-    """Background task to run agent assessments and store report."""
+    """Background task to run agent assessments and store report.
+
+    When run_id is provided, uses the streaming pipeline that writes S3
+    log chunks and updates the eval_runs table. Otherwise falls back to
+    the original batch pipeline for backward compat.
+    """
     from cryptography.fernet import Fernet
 
-    from decision_hub.domain.evals import run_eval_pipeline
     from decision_hub.infra.database import create_engine, get_api_keys_for_eval
     from decision_hub.infra.modal_client import get_agent_config, validate_api_key
 
@@ -364,14 +391,8 @@ def run_assessment_background(
         engine = create_engine(settings.database_url)
 
         # --- Phase 1: read API keys then release the connection ---
-        # The connection must be closed before the pipeline runs because
-        # Modal sandbox + agent execution takes 5-10 minutes. PgBouncer
-        # kills idle-in-transaction connections well before that.
-        agent_config = get_agent_config(eval_config.agent)
+        agent_config = get_agent_config(assessment_config.agent)
         required_keys = [agent_config.key_env_var] if agent_config.key_env_var else []
-        # The judge always calls the Anthropic API, so we need an
-        # ANTHROPIC_API_KEY even when the agent under test uses a different
-        # provider (e.g. codex uses CODEX_API_KEY, gemini uses GEMINI_API_KEY).
         judge_key_name = "ANTHROPIC_API_KEY"
         if judge_key_name not in required_keys:
             required_keys.append(judge_key_name)
@@ -387,52 +408,104 @@ def run_assessment_background(
             for name, value in encrypted_keys.items()
         }
 
-        # Fail fast if the API key is invalid instead of hanging in a sandbox
         for key_name, key_value in agent_env_vars.items():
             validate_api_key(key_name, key_value)
         print("[assessment] API key validation passed", flush=True)
 
-        # --- Phase 2: run pipeline (no DB connection held) ---
-        print(f"[assessment] Phase 2: running pipeline ({len(eval_cases)} cases)", flush=True)
         judge_api_key = agent_env_vars.get(judge_key_name, "")
-        case_results, passed, total, total_duration_ms = run_eval_pipeline(
-            skill_zip=skill_zip,
-            eval_config=eval_config,
-            eval_cases=eval_cases,
-            agent_env_vars=agent_env_vars,
-            org_slug=org_slug,
-            skill_name=skill_name,
-            judge_api_key=judge_api_key,
-        )
 
-        # --- Phase 3: store results in a fresh connection ---
-        all_passed = all(r["verdict"] == "pass" for r in case_results)
-        status = "completed" if all_passed else "failed"
+        # --- Phase 2: run pipeline ---
+        if run_id is not None:
+            # Streaming pipeline with S3 persistence
+            from decision_hub.domain.evals import run_streaming_eval
+            from decision_hub.infra.storage import create_s3_client
 
-        print(f"[assessment] Phase 3: storing results — {passed}/{total} passed, status={status}", flush=True)
-        with engine.connect() as conn:
-            from decision_hub.infra.database import insert_eval_report
-
-            insert_eval_report(
-                conn,
-                version_id=version_id,
-                agent=eval_config.agent,
-                judge_model=eval_config.judge_model,
-                case_results=case_results,
-                passed=passed,
-                total=total,
-                total_duration_ms=total_duration_ms,
-                status=status,
+            s3_client = create_s3_client(
+                region=settings.aws_region,
+                access_key_id=settings.aws_access_key_id,
+                secret_access_key=settings.aws_secret_access_key,
             )
-            conn.commit()
+            log_s3_prefix = f"eval-logs/{run_id}/"
 
-        print(f"[assessment] Done — {passed}/{total} passed in {total_duration_ms}ms", flush=True)
+            print(f"[assessment] Phase 2: running streaming pipeline ({len(assessment_cases)} cases)", flush=True)
+            run_streaming_eval(
+                run_id=run_id,
+                version_id=version_id,
+                skill_zip=skill_zip,
+                eval_config=assessment_config,
+                eval_cases=assessment_cases,
+                agent_env_vars=agent_env_vars,
+                org_slug=org_slug,
+                skill_name=skill_name,
+                judge_api_key=judge_api_key,
+                database_url=settings.database_url,
+                s3_client=s3_client,
+                s3_bucket=settings.s3_bucket,
+                log_s3_prefix=log_s3_prefix,
+            )
+            print(f"[assessment] Streaming pipeline completed for {org_slug}/{skill_name}", flush=True)
+        else:
+            # Original batch pipeline (backward compat)
+            from decision_hub.domain.evals import run_eval_pipeline
+
+            print(f"[assessment] Phase 2: running batch pipeline ({len(assessment_cases)} cases)", flush=True)
+            case_results, passed, total, total_duration_ms = run_eval_pipeline(
+                skill_zip=skill_zip,
+                eval_config=assessment_config,
+                eval_cases=assessment_cases,
+                agent_env_vars=agent_env_vars,
+                org_slug=org_slug,
+                skill_name=skill_name,
+                judge_api_key=judge_api_key,
+            )
+
+            all_passed = all(r["verdict"] == "pass" for r in case_results)
+            status = "completed" if all_passed else "failed"
+
+            print(f"[assessment] Phase 3: storing results — {passed}/{total} passed, status={status}", flush=True)
+            with engine.connect() as conn:
+                from decision_hub.infra.database import insert_eval_report
+
+                insert_eval_report(
+                    conn,
+                    version_id=version_id,
+                    agent=assessment_config.agent,
+                    judge_model=assessment_config.judge_model,
+                    case_results=case_results,
+                    passed=passed,
+                    total=total,
+                    total_duration_ms=total_duration_ms,
+                    status=status,
+                )
+                conn.commit()
+
+            print(f"[assessment] Done — {passed}/{total} passed in {total_duration_ms}ms", flush=True)
 
     except Exception as e:
         logger.error(f"Agent assessment failed for version {version_id}: {e}")
         print(f"[assessment] ERROR: {e}", flush=True)
-        # INSERT an error report — no row exists yet because the failure
-        # happened before insert_eval_report() was reached in the happy path.
+
+        # Update run row if using streaming pipeline
+        if run_id is not None:
+            try:
+                from datetime import datetime, timezone
+
+                from decision_hub.infra.database import create_engine as _ce
+                from decision_hub.infra.database import update_eval_run_status
+
+                err_engine = _ce(settings.database_url)
+                with err_engine.connect() as err_conn:
+                    update_eval_run_status(
+                        err_conn, run_id,
+                        status="failed",
+                        error_message=str(e),
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                    err_conn.commit()
+            except Exception as inner:
+                logger.error(f"Failed to update run {run_id}: {inner}")
+
+        # INSERT an error report
         try:
             from decision_hub.infra.database import create_engine as _create_engine
             from decision_hub.infra.database import insert_eval_report
@@ -442,11 +515,11 @@ def run_assessment_background(
                 insert_eval_report(
                     err_conn,
                     version_id=version_id,
-                    agent=eval_config.agent,
-                    judge_model=eval_config.judge_model,
+                    agent=assessment_config.agent,
+                    judge_model=assessment_config.judge_model,
                     case_results=[],
                     passed=0,
-                    total=len(eval_cases),
+                    total=len(assessment_cases),
                     total_duration_ms=0,
                     status="failed",
                     error_message=str(e),

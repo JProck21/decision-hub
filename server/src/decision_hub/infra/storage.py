@@ -96,3 +96,103 @@ def compute_checksum(data: bytes) -> str:
         Lowercase hex string of the SHA256 digest.
     """
     return hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Eval log chunk operations
+# ---------------------------------------------------------------------------
+
+
+def upload_eval_log_chunk(
+    client: BaseClient,
+    bucket: str,
+    s3_prefix: str,
+    seq: int,
+    events_jsonl: str,
+) -> str:
+    """Upload a JSONL chunk of eval log events to S3.
+
+    Args:
+        client: Configured S3 client.
+        bucket: Target S3 bucket name.
+        s3_prefix: S3 prefix (e.g. 'eval-logs/{run_id}/').
+        seq: Chunk sequence number (zero-padded to 4 digits in the key).
+        events_jsonl: Newline-delimited JSON string of events.
+
+    Returns:
+        The S3 key of the uploaded chunk.
+    """
+    s3_key = f"{s3_prefix}{seq:04d}.jsonl"
+    client.put_object(
+        Bucket=bucket,
+        Key=s3_key,
+        Body=events_jsonl.encode("utf-8"),
+        ContentType="application/x-ndjson",
+    )
+    return s3_key
+
+
+def list_eval_log_chunks(
+    client: BaseClient,
+    bucket: str,
+    s3_prefix: str,
+    after_seq: int = 0,
+) -> list[tuple[int, str]]:
+    """List eval log chunk keys with sequence number > after_seq.
+
+    Returns:
+        List of (seq, s3_key) tuples sorted by seq ascending.
+    """
+    resp = client.list_objects_v2(Bucket=bucket, Prefix=s3_prefix)
+    contents = resp.get("Contents", [])
+
+    chunks: list[tuple[int, str]] = []
+    for obj in contents:
+        key = obj["Key"]
+        # Extract seq from filename like 'eval-logs/{run_id}/0001.jsonl'
+        filename = key.rsplit("/", 1)[-1]
+        if not filename.endswith(".jsonl"):
+            continue
+        seq_str = filename.replace(".jsonl", "")
+        try:
+            seq = int(seq_str)
+        except ValueError:
+            continue
+        if seq > after_seq:
+            chunks.append((seq, key))
+
+    chunks.sort(key=lambda x: x[0])
+    return chunks
+
+
+def read_eval_log_chunk(
+    client: BaseClient,
+    bucket: str,
+    s3_key: str,
+) -> str:
+    """Read and return the content of an eval log chunk from S3."""
+    resp = client.get_object(Bucket=bucket, Key=s3_key)
+    return resp["Body"].read().decode("utf-8")
+
+
+def delete_eval_logs(
+    client: BaseClient,
+    bucket: str,
+    s3_prefix: str,
+) -> int:
+    """Delete all eval log chunks under a prefix.
+
+    Returns:
+        Number of objects deleted.
+    """
+    resp = client.list_objects_v2(Bucket=bucket, Prefix=s3_prefix)
+    contents = resp.get("Contents", [])
+    if not contents:
+        return 0
+
+    objects = [{"Key": obj["Key"]} for obj in contents]
+    client.delete_objects(
+        Bucket=bucket,
+        Delete={"Objects": objects},
+    )
+    return len(objects)

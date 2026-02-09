@@ -19,6 +19,7 @@ from dhub_core.models import (  # noqa: F401
 CheckSeverity = Literal["pass", "warn", "fail"]
 SafetyGrade = Literal["A", "B", "C", "F"]
 EvalReportStatus = Literal["pending", "completed", "failed", "error"]
+EvalRunStatus = Literal["pending", "provisioning", "running", "judging", "completed", "failed"]
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,27 @@ class EvalReport:
     status: EvalReportStatus
     error_message: str | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class EvalRun:
+    """Operational state for a background eval job."""
+    id: UUID
+    version_id: UUID
+    user_id: UUID
+    agent: str
+    judge_model: str
+    status: EvalRunStatus
+    stage: str | None
+    current_case: str | None
+    current_case_index: int | None
+    total_cases: int
+    heartbeat_at: datetime | None
+    log_s3_prefix: str
+    log_seq: int
+    error_message: str | None
+    created_at: datetime | None
+    completed_at: datetime | None
 
 
 @dataclass(frozen=True)

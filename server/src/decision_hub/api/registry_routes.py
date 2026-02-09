@@ -2,6 +2,8 @@
 
 import json
 import logging
+from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -30,9 +32,13 @@ from decision_hub.infra.database import (
     delete_skill as delete_skill_record,
     delete_version,
     fetch_all_skills_for_index,
+    find_active_eval_runs_for_user,
     find_audit_logs,
     find_eval_report_by_skill,
     find_eval_report_by_version,
+    find_eval_run,
+    find_eval_runs_for_version,
+    find_latest_eval_run_for_version,
     find_skill,
     find_version,
     increment_skill_downloads,
@@ -41,12 +47,15 @@ from decision_hub.infra.database import (
     insert_version,
     resolve_latest_version,
     resolve_version,
+    update_eval_run_status,
     update_skill_description,
 )
 from decision_hub.infra.storage import (
     compute_checksum,
     delete_skill_zip,
     generate_presigned_url,
+    list_eval_log_chunks,
+    read_eval_log_chunk,
     upload_skill_zip,
 )
 from decision_hub.models import User
@@ -64,11 +73,13 @@ router = APIRouter(prefix="/v1", tags=["registry"])
 class PublishResponse(BaseModel):
     """Confirmation of a published skill version."""
     skill_id: str
+    version_id: str
     version: str
     s3_key: str
     checksum: str
     eval_status: str
     eval_report_status: str | None = None
+    eval_run_id: str | None = None
 
 
 class ResolveResponse(BaseModel):
@@ -151,6 +162,37 @@ class EvalReportResponse(BaseModel):
     status: str
     error_message: str | None
     created_at: str | None
+
+
+class EvalRunResponse(BaseModel):
+    """Eval run metadata."""
+    id: str
+    version_id: str
+    agent: str
+    judge_model: str
+    status: str
+    stage: str | None
+    current_case: str | None
+    current_case_index: int | None
+    total_cases: int
+    heartbeat_at: str | None
+    log_seq: int
+    error_message: str | None
+    created_at: str | None
+    completed_at: str | None
+
+
+class EvalRunLogsResponse(BaseModel):
+    """Paginated eval run log events."""
+    events: list[dict]
+    next_cursor: int
+    run_status: str
+    run_stage: str | None
+    current_case: str | None
+
+
+# Stale heartbeat threshold for zombie detection (5 minutes)
+_STALE_HEARTBEAT_SECONDS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +309,7 @@ def publish_skill(
     # Commit now so the version row is visible to the background eval thread.
     conn.commit()
 
-    eval_report_status = maybe_trigger_agent_assessment(
+    eval_report_status, eval_run_id = maybe_trigger_agent_assessment(
         eval_config=eval_config,
         eval_cases=eval_cases,
         s3_key=s3_key,
@@ -281,11 +323,13 @@ def publish_skill(
 
     return PublishResponse(
         skill_id=str(skill.id),
+        version_id=str(version_record.id),
         version=version_record.semver,
         s3_key=version_record.s3_key,
         checksum=version_record.checksum,
         eval_status=eval_status,
         eval_report_status=eval_report_status,
+        eval_run_id=eval_run_id,
     )
 
 
@@ -500,6 +544,130 @@ def delete_skill_version(
         skill_name=skill_name,
         version=version,
     )
+
+
+# ---------------------------------------------------------------------------
+# Eval run endpoints
+# ---------------------------------------------------------------------------
+
+
+def _run_to_response(run) -> EvalRunResponse:
+    """Convert an EvalRun model to a response schema."""
+    return EvalRunResponse(
+        id=str(run.id),
+        version_id=str(run.version_id),
+        agent=run.agent,
+        judge_model=run.judge_model,
+        status=run.status,
+        stage=run.stage,
+        current_case=run.current_case,
+        current_case_index=run.current_case_index,
+        total_cases=run.total_cases,
+        heartbeat_at=run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+        log_seq=run.log_seq,
+        error_message=run.error_message,
+        created_at=run.created_at.isoformat() if run.created_at else None,
+        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+    )
+
+
+def _check_zombie(conn: Connection, run) -> str:
+    """Check if a running eval run has a stale heartbeat (zombie).
+
+    If heartbeat_at is older than _STALE_HEARTBEAT_SECONDS, marks the
+    run as failed and returns "failed". Otherwise returns run.status.
+    """
+    if run.status not in ("running", "judging", "provisioning"):
+        return run.status
+    if run.heartbeat_at is None:
+        return run.status
+    elapsed = (datetime.now(timezone.utc) - run.heartbeat_at).total_seconds()
+    if elapsed > _STALE_HEARTBEAT_SECONDS:
+        update_eval_run_status(
+            conn, run.id,
+            status="failed",
+            error_message=f"Stale heartbeat ({int(elapsed)}s). Worker may have crashed.",
+            completed_at=datetime.now(timezone.utc),
+        )
+        return "failed"
+    return run.status
+
+
+@router.get("/eval-runs/{run_id}", response_model=EvalRunResponse)
+def get_eval_run(
+    run_id: str,
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> EvalRunResponse:
+    """Get eval run metadata by run ID."""
+    run = find_eval_run(conn, UUID(run_id))
+    if run is None:
+        raise HTTPException(status_code=404, detail="Eval run not found")
+    _check_zombie(conn, run)
+    # Re-read after potential zombie update
+    run = find_eval_run(conn, UUID(run_id))
+    return _run_to_response(run)
+
+
+@router.get("/eval-runs/{run_id}/logs", response_model=EvalRunLogsResponse)
+def get_eval_run_logs(
+    run_id: str,
+    cursor: int = Query(0, ge=0, description="Return events with seq > cursor"),
+    conn: Connection = Depends(get_connection),
+    s3_client=Depends(get_s3_client),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
+) -> EvalRunLogsResponse:
+    """Get eval run log events with cursor-based pagination."""
+    run = find_eval_run(conn, UUID(run_id))
+    if run is None:
+        raise HTTPException(status_code=404, detail="Eval run not found")
+
+    # Zombie detection on read
+    effective_status = _check_zombie(conn, run)
+
+    # Fetch all S3 chunks for the run. The cursor is an event sequence number
+    # (e.g. 50), not a chunk file sequence number (e.g. 3), so we can't use
+    # it to filter S3 files. Instead, fetch all chunks and filter events in memory.
+    chunks = list_eval_log_chunks(
+        s3_client, settings.s3_bucket, run.log_s3_prefix, after_seq=0,
+    )
+
+    # Read and parse events from each chunk, filtering by cursor
+    all_events: list[dict] = []
+    max_seq = cursor
+    for chunk_seq, s3_key in chunks:
+        content = read_eval_log_chunk(s3_client, settings.s3_bucket, s3_key)
+        for line in content.strip().split("\n"):
+            if line.strip():
+                event = json.loads(line)
+                event_seq = event.get("seq", 0)
+                if event_seq > cursor:
+                    all_events.append(event)
+                if event_seq > max_seq:
+                    max_seq = event_seq
+
+    return EvalRunLogsResponse(
+        events=all_events,
+        next_cursor=max_seq,
+        run_status=effective_status,
+        run_stage=run.stage,
+        current_case=run.current_case,
+    )
+
+
+@router.get("/eval-runs", response_model=list[EvalRunResponse])
+def list_eval_runs(
+    version_id: str | None = Query(None, description="Filter by version ID"),
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> list[EvalRunResponse]:
+    """List eval runs, optionally filtered by version ID."""
+    if version_id is not None:
+        runs = find_eval_runs_for_version(conn, UUID(version_id))
+    else:
+        runs = find_active_eval_runs_for_user(conn, current_user.id)
+    return [_run_to_response(r) for r in runs]
 
 
 # ---------------------------------------------------------------------------

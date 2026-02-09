@@ -49,10 +49,11 @@ def run_eval_task(
     org_slug: str,
     skill_name: str,
     user_id: str,
+    eval_run_id: str | None = None,
 ):
-    """Run agent evaluation in its own Modal container.
+    """Run agent assessment in its own Modal container.
 
-    Spawned asynchronously from the publish endpoint so the eval
+    Spawned asynchronously from the publish endpoint so the assessment
     has its own lifecycle and doesn't get killed when the web
     container scales down.
 
@@ -66,13 +67,13 @@ def run_eval_task(
     from decision_hub.models import EvalCase, EvalConfig
     from decision_hub.settings import create_settings
 
-    print(f"[run_eval_task] Starting eval for {org_slug}/{skill_name} "
-          f"version={version_id} agent={eval_agent} cases={len(eval_cases_dicts)}",
+    print(f"[run_eval_task] Starting assessment for {org_slug}/{skill_name} "
+          f"version={version_id} run={eval_run_id} agent={eval_agent} "
+          f"cases={len(eval_cases_dicts)}",
           flush=True)
 
     settings = create_settings()
 
-    # Download skill zip from S3 (instead of receiving raw bytes via Modal)
     print(f"[run_eval_task] Downloading skill zip from s3://{s3_bucket}/{s3_key}", flush=True)
     s3_client = create_s3_client(
         region=settings.aws_region,
@@ -94,18 +95,16 @@ def run_eval_task(
         for d in eval_cases_dicts
     )
 
-    print(f"[run_eval_task] Settings loaded, calling run_assessment_background",
-          flush=True)
-
     run_assessment_background(
         version_id=UUID(version_id),
-        eval_config=config,
-        eval_cases=cases,
+        assessment_config=config,
+        assessment_cases=cases,
         skill_zip=skill_zip,
         org_slug=org_slug,
         skill_name=skill_name,
         settings=settings,
         user_id=UUID(user_id),
+        run_id=UUID(eval_run_id) if eval_run_id else None,
     )
 
     print(f"[run_eval_task] Completed for {org_slug}/{skill_name}", flush=True)

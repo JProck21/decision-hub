@@ -28,6 +28,7 @@ dhub delete org/skill   Delete skill versions from registry
 dhub run org/skill      Run a locally installed skill
 dhub ask "query"        Natural language skill search
 dhub eval-report org/skill@version  View eval report
+dhub logs [ref] [-f]    View or tail eval run logs
 dhub org list           List your namespaces
 dhub keys add <name>    Store an API key for evals
 dhub keys list          List stored API key names
@@ -212,6 +213,21 @@ The report shows:
 - **Results**: pass/fail count and per-case details with reasoning
 
 Evals run automatically in the background after publishing a skill that has an `evals` block. Use `dhub eval-report` to check results.
+
+## Eval Logs (Real-Time Streaming)
+
+Tail eval run logs in real-time, or view recent runs:
+
+```bash
+dhub logs                              # list recent eval runs
+dhub logs myorg/my-skill --follow      # tail latest run for latest version
+dhub logs myorg/my-skill@1.0.0 -f      # tail latest run for specific version
+dhub logs <run-id> --follow            # tail a specific run by ID
+```
+
+When you publish a skill with evals, the CLI automatically attaches to the log stream. Press Ctrl-C to detach — you can re-attach later with `dhub logs`.
+
+Events include: sandbox setup, agent stdout/stderr, judge start, case verdicts (PASS/FAIL), and a final summary.
 
 ## API Key Management
 

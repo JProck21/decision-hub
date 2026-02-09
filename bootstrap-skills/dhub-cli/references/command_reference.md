@@ -264,6 +264,37 @@ The `@VERSION` is required. Format: `myorg/my-skill@1.0.0`.
 
 ---
 
+## dhub logs
+
+View or tail eval run logs in real-time.
+
+```
+dhub logs [SKILL_REF] [--follow|-f]
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `SKILL_REF` | string | None | Skill ref (org/skill[@version]) or eval run ID |
+| `--follow` / `-f` | flag | False | Tail logs in real-time |
+
+**Usage patterns:**
+- `dhub logs` — list recent eval runs (table with ID, status, agent, cases, stage)
+- `dhub logs org/skill --follow` — tail latest run for the latest version
+- `dhub logs org/skill@1.0.0 --follow` — tail latest run for a specific version
+- `dhub logs <run-id> --follow` — tail a specific eval run by its UUID
+
+**Log events:**
+- `setup` — sandbox provisioning
+- `case_start` — case N/M starting
+- `log` — agent stdout/stderr (truncated to 200 chars for display)
+- `judge_start` — LLM judge invoked
+- `case_result` — PASS/FAIL/ERROR with reasoning
+- `report` — final summary (passed/total, duration)
+
+**Publish auto-attach:** When publishing a skill with evals, the CLI automatically starts tailing the eval run logs. Press Ctrl-C to detach; re-attach later with `dhub logs <run-id> --follow`.
+
+---
+
 ## dhub org list
 
 List namespaces you can publish to.

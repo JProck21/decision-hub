@@ -1136,7 +1136,7 @@ class TestDeleteAllVersions:
     @patch("decision_hub.api.registry_routes.find_skill")
     @patch("decision_hub.api.registry_service.find_org_member")
     @patch("decision_hub.api.registry_service.find_org_by_slug")
-    def test_delete_all_allowed_for_admin(
+    def test_delete_all_allowed_for_admin(  # noqa: PLR0913
         self,
         mock_find_org: MagicMock,
         mock_find_member: MagicMock,

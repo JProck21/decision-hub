@@ -103,8 +103,17 @@ def _publish_skill_directory(
             "Users will need --allow-risky to install.[/]"
         )
 
-    if eval_report_status == "pending":
-        console.print("[dim]Agent evaluation running in background...[/]")
+    eval_run_id = data.get("eval_run_id")
+    if eval_report_status == "pending" and eval_run_id:
+        console.print(f"[dim]Agent assessment started (run: {eval_run_id[:8]}...)[/]")
+        console.print("[dim]Tailing logs... (Ctrl-C to detach)[/]")
+        try:
+            from dhub.cli.config import build_headers as _bh
+            _tail_eval_logs(api_url, _bh(token), eval_run_id)
+        except KeyboardInterrupt:
+            console.print("\n[dim]Detached. Resume with: dhub logs {eval_run_id} --follow[/]")
+    elif eval_report_status == "pending":
+        console.print("[dim]Agent assessment running in background...[/]")
 
     return True
 
@@ -685,6 +694,284 @@ def install_command(
             console.print(
                 f"[green]Linked to {agent} at {link_path}[/]"
             )
+
+
+def logs_command(
+    skill_ref: str = typer.Argument(
+        None, help="Skill ref (org/skill[@version]) or eval run ID"
+    ),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Tail logs in real-time"),
+) -> None:
+    """View eval run logs. Tail them with --follow.
+
+    Examples:
+        dhub logs                              # list recent eval runs
+        dhub logs org/skill --follow           # tail latest run for latest version
+        dhub logs org/skill@1.0.0 --follow     # tail latest run for specific version
+        dhub logs <run-id> --follow            # tail a specific run by ID
+    """
+    from dhub.cli.config import build_headers, get_api_url, get_token
+
+    api_url = get_api_url()
+    token = get_token()
+    headers = build_headers(token)
+
+    if skill_ref is None:
+        # No args: list recent runs
+        _list_recent_runs(api_url, headers)
+        return
+
+    # Try to resolve as a run ID (UUID format)
+    run_id = _try_resolve_run_id(skill_ref, api_url, headers)
+
+    if run_id is None:
+        console.print(f"[red]Error: Could not resolve '{skill_ref}' to an eval run.[/]")
+        raise typer.Exit(1)
+
+    if follow:
+        _tail_eval_logs(api_url, headers, run_id)
+    else:
+        # Show run status
+        _show_run_status(api_url, headers, run_id)
+
+
+def _try_resolve_run_id(skill_ref: str, api_url: str, headers: dict) -> str | None:
+    """Try to resolve a skill_ref to an eval run ID.
+
+    Tries in order:
+    1. Direct UUID (run ID)
+    2. org/skill@version -> latest run for that version
+    3. org/skill -> latest version -> latest run
+    """
+    import re
+
+    # Check if it looks like a UUID
+    uuid_pattern = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+    )
+    if uuid_pattern.match(skill_ref):
+        # Verify it exists
+        with httpx.Client(timeout=60) as client:
+            resp = client.get(f"{api_url}/v1/eval-runs/{skill_ref}", headers=headers)
+            if resp.status_code == 200:
+                return skill_ref
+            return None
+
+    # Parse org/skill[@version]
+    if "@" in skill_ref:
+        skill_path, version = skill_ref.rsplit("@", 1)
+    else:
+        skill_path = skill_ref
+        version = None
+
+    parts = skill_path.split("/", 1)
+    if len(parts) != 2:
+        return None
+    org_slug, skill_name = parts
+
+    # Resolve version to version_id
+    if version is None:
+        # Get latest version
+        with httpx.Client(timeout=60) as client:
+            resp = client.get(
+                f"{api_url}/v1/skills/{org_slug}/{skill_name}/latest-version",
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                return None
+            version = resp.json()["version"]
+
+    # Resolve version to version_id via resolve endpoint
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(
+            f"{api_url}/v1/resolve/{org_slug}/{skill_name}",
+            params={"spec": version, "allow_risky": "true"},
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            return None
+
+    # Get eval runs for this version
+    # We need the version_id — get it from the eval-runs list endpoint
+    # First, try to find runs via the version_id approach
+    # Since resolve doesn't return version_id, we'll search by listing runs
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(
+            f"{api_url}/v1/eval-runs",
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            return None
+        runs = resp.json()
+
+    # Find the most recent run (they're returned newest first)
+    if runs:
+        return runs[0]["id"]
+    return None
+
+
+def _list_recent_runs(api_url: str, headers: dict) -> None:
+    """List recent eval runs for the current user."""
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{api_url}/v1/eval-runs", headers=headers)
+        resp.raise_for_status()
+        runs = resp.json()
+
+    if not runs:
+        console.print("No eval runs found.")
+        return
+
+    table = Table(title="Recent Eval Runs")
+    table.add_column("Run ID", style="dim")
+    table.add_column("Status")
+    table.add_column("Agent", style="cyan")
+    table.add_column("Cases")
+    table.add_column("Stage")
+    table.add_column("Created")
+
+    status_colors = {
+        "pending": "yellow",
+        "provisioning": "yellow",
+        "running": "blue",
+        "judging": "blue",
+        "completed": "green",
+        "failed": "red",
+    }
+
+    for run in runs:
+        status = run["status"]
+        color = status_colors.get(status, "white")
+        case_info = f"{run.get('current_case_index', '?')}/{run['total_cases']}" if run.get("current_case_index") is not None else f"0/{run['total_cases']}"
+        table.add_row(
+            run["id"][:8] + "...",
+            f"[{color}]{status}[/]",
+            run["agent"],
+            case_info,
+            run.get("stage") or "-",
+            run.get("created_at", "")[:19] if run.get("created_at") else "-",
+        )
+
+    console.print(table)
+    console.print("\n[dim]Use 'dhub logs <run-id> --follow' to tail a run.[/]")
+
+
+def _show_run_status(api_url: str, headers: dict, run_id: str) -> None:
+    """Show current status of an eval run."""
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{api_url}/v1/eval-runs/{run_id}", headers=headers)
+        resp.raise_for_status()
+        run = resp.json()
+
+    status = run["status"]
+    status_colors = {
+        "pending": "yellow",
+        "provisioning": "yellow",
+        "running": "blue",
+        "judging": "blue",
+        "completed": "green",
+        "failed": "red",
+    }
+    color = status_colors.get(status, "white")
+
+    console.print(f"Run:    [dim]{run['id']}[/]")
+    console.print(f"Agent:  [cyan]{run['agent']}[/]")
+    console.print(f"Status: [{color}]{status}[/]")
+    if run.get("stage"):
+        console.print(f"Stage:  {run['stage']}")
+    if run.get("current_case"):
+        console.print(f"Case:   {run['current_case']} ({run.get('current_case_index', '?')}/{run['total_cases']})")
+    if run.get("error_message"):
+        console.print(f"[red]Error:  {run['error_message']}[/]")
+
+    console.print(f"\n[dim]Use 'dhub logs {run_id} --follow' to tail logs.[/]")
+
+
+def _tail_eval_logs(api_url: str, headers: dict, run_id: str) -> None:
+    """Tail eval run logs with polling."""
+    import time
+
+    cursor = 0
+    console.print(f"[dim]Tailing eval run {run_id[:8]}...[/]\n")
+
+    while True:
+        with httpx.Client(timeout=60) as client:
+            resp = client.get(
+                f"{api_url}/v1/eval-runs/{run_id}/logs",
+                params={"cursor": cursor},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        for event in data["events"]:
+            _render_event(event)
+
+        cursor = data["next_cursor"]
+
+        if data["run_status"] in ("completed", "failed"):
+            if data["run_status"] == "failed":
+                console.print("\n[red]Eval run failed.[/]")
+            break
+
+        time.sleep(1.5)
+
+
+def _render_event(event: dict) -> None:
+    """Render a single eval event to the console."""
+    event_type = event.get("type", "")
+
+    if event_type == "setup":
+        console.print(f"[dim]{event.get('content', '')}[/]")
+
+    elif event_type == "case_start":
+        idx = event.get("case_index", 0)
+        total = event.get("total_cases", "?")
+        name = event.get("case_name", "")
+        console.print(f"\n[bold][{idx + 1}/{total}] {name}[/]")
+
+    elif event_type == "log":
+        stream = event.get("stream", "stdout")
+        content = event.get("content", "")
+        # Truncate long log lines for display
+        display = content[:200] + "..." if len(content) > 200 else content
+        display = display.rstrip("\n")
+        if display:
+            if stream == "stderr":
+                console.print(f"  [dim red]{display}[/]")
+            else:
+                console.print(f"  [dim]{display}[/]")
+
+    elif event_type == "judge_start":
+        console.print("  [dim]Judging with LLM...[/]")
+
+    elif event_type == "case_result":
+        verdict = event.get("verdict", "")
+        name = event.get("case_name", "")
+        reasoning = event.get("reasoning", "")
+        duration = event.get("duration_ms", 0) / 1000
+
+        if verdict == "pass":
+            console.print(f"  [green]PASS[/] ({duration:.1f}s)")
+        elif verdict == "fail":
+            console.print(f"  [red]FAIL[/] ({duration:.1f}s)")
+            if reasoning:
+                console.print(f"    [dim]{reasoning[:200]}[/]")
+        else:
+            console.print(f"  [red]{verdict.upper()}[/] ({duration:.1f}s)")
+            if reasoning:
+                console.print(f"    [dim]{reasoning[:200]}[/]")
+
+    elif event_type == "report":
+        passed = event.get("passed", 0)
+        total = event.get("total", 0)
+        duration = event.get("total_duration_ms", 0) / 1000
+        status = event.get("status", "")
+
+        console.print()
+        if status == "completed":
+            console.print(f"[green]Assessment complete: {passed}/{total} passed in {duration:.1f}s[/]")
+        else:
+            console.print(f"[red]Assessment done: {passed}/{total} passed in {duration:.1f}s[/]")
 
 
 def uninstall_command(

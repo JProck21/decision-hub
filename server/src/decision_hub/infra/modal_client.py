@@ -466,6 +466,162 @@ def _create_skill_sandbox(
     return sb, skill_path
 
 
+# ---------------------------------------------------------------------------
+# Monitor script for real-time sandbox output streaming
+# ---------------------------------------------------------------------------
+
+# Embedded Python script that runs as root inside the sandbox.
+# Tails agent stdout/stderr files using seek offsets and prints structured
+# lines that the parent process can parse. Exits when the agent writes its
+# exit code file or timeout is reached.
+MONITOR_SCRIPT = r"""
+import base64
+import os
+import sys
+import time
+
+OUT_FILE = "/tmp/agent_stdout.txt"
+ERR_FILE = "/tmp/agent_stderr.txt"
+RC_FILE = "/tmp/agent_rc.txt"
+POLL_INTERVAL = 0.5
+TIMEOUT = int(sys.argv[1]) if len(sys.argv) > 1 else 840
+
+out_pos = 0
+err_pos = 0
+start = time.monotonic()
+
+while (time.monotonic() - start) < TIMEOUT:
+    # Read new stdout content
+    if os.path.exists(OUT_FILE):
+        with open(OUT_FILE, "rb") as f:
+            f.seek(out_pos)
+            chunk = f.read()
+            if chunk:
+                out_pos += len(chunk)
+                print("OUT:" + base64.b64encode(chunk).decode(), flush=True)
+
+    # Read new stderr content
+    if os.path.exists(ERR_FILE):
+        with open(ERR_FILE, "rb") as f:
+            f.seek(err_pos)
+            chunk = f.read()
+            if chunk:
+                err_pos += len(chunk)
+                print("ERR:" + base64.b64encode(chunk).decode(), flush=True)
+
+    # Check if agent is done
+    if os.path.exists(RC_FILE):
+        # Final flush of remaining output
+        time.sleep(0.2)
+        if os.path.exists(OUT_FILE):
+            with open(OUT_FILE, "rb") as f:
+                f.seek(out_pos)
+                chunk = f.read()
+                if chunk:
+                    print("OUT:" + base64.b64encode(chunk).decode(), flush=True)
+        if os.path.exists(ERR_FILE):
+            with open(ERR_FILE, "rb") as f:
+                f.seek(err_pos)
+                chunk = f.read()
+                if chunk:
+                    print("ERR:" + base64.b64encode(chunk).decode(), flush=True)
+
+        with open(RC_FILE) as f:
+            rc = f.read().strip()
+        print("RC:" + rc, flush=True)
+        sys.exit(0)
+
+    time.sleep(POLL_INTERVAL)
+
+# Timeout reached
+print("RC:137", flush=True)
+"""
+
+
+def stream_eval_case_in_sandbox(
+    skill_zip: bytes,
+    prompt: str,
+    agent_config: AgentSandboxConfig,
+    agent_env_vars: dict[str, str],
+    org_slug: str,
+    skill_name: str,
+):
+    """Run a single eval case and yield structured output events.
+
+    Yields dicts with keys: stream ("stdout"|"stderr"), content (str).
+    Returns the final result as a dict with: stdout, stderr, exit_code, duration_ms.
+
+    The generator protocol: yield output events, then return the final result
+    via StopIteration.value.
+    """
+    import base64
+    import time
+
+    sb, skill_path = _create_skill_sandbox(
+        skill_zip, agent_config, agent_env_vars, org_slug, skill_name
+    )
+
+    try:
+        # Launch agent (same approach as _run_agent_in_sandbox)
+        cmd = build_agent_run_command(agent_config, prompt)
+        shell_cmd = " ".join(shlex.quote(c) for c in cmd)
+
+        out_file = "/tmp/agent_stdout.txt"
+        err_file = "/tmp/agent_stderr.txt"
+        rc_file = "/tmp/agent_rc.txt"
+        pid_file = "/tmp/agent_pid.txt"
+
+        path_prefix = ""
+        if skill_path:
+            path_prefix = f"export PATH={skill_path}/.venv/bin:$PATH && "
+
+        inner_script = (
+            f"#!/bin/bash\n"
+            f"{path_prefix}cd $HOME && {shell_cmd}\n"
+        )
+        launch_script = (
+            f"#!/bin/bash\n"
+            f"su -m sandbox /tmp/run_inner.sh > {out_file} 2> {err_file}\n"
+            f"echo $? > {rc_file}\n"
+        )
+        _run_in_sandbox(sb, "bash", "-c", f"cat > /tmp/run_inner.sh << 'INNER_EOF'\n{inner_script}INNER_EOF\nchmod +x /tmp/run_inner.sh")
+        _run_in_sandbox(sb, "bash", "-c", f"cat > /tmp/run_agent.sh << 'SCRIPT_EOF'\n{launch_script}SCRIPT_EOF\nchmod +x /tmp/run_agent.sh")
+        _run_in_sandbox(sb, "bash", "-c", f"nohup /tmp/run_agent.sh &\necho $! > {pid_file}")
+
+        start = time.monotonic()
+
+        # Launch monitor script that tails output files
+        monitor_proc = sb.exec("python3", "-c", MONITOR_SCRIPT, "840")
+
+        full_stdout = []
+        full_stderr = []
+        exit_code = -1
+
+        for line in monitor_proc.stdout:
+            line = line.rstrip("\n")
+            if line.startswith("OUT:"):
+                chunk = base64.b64decode(line[4:]).decode("utf-8", errors="replace")
+                full_stdout.append(chunk)
+                yield {"stream": "stdout", "content": chunk}
+            elif line.startswith("ERR:"):
+                chunk = base64.b64decode(line[4:]).decode("utf-8", errors="replace")
+                full_stderr.append(chunk)
+                yield {"stream": "stderr", "content": chunk}
+            elif line.startswith("RC:"):
+                try:
+                    exit_code = int(line[3:].strip())
+                except ValueError:
+                    exit_code = -1
+                break
+
+        monitor_proc.wait()
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        return "".join(full_stdout), "".join(full_stderr), exit_code, duration_ms
+    finally:
+        sb.terminate()
+
+
 def run_eval_case_in_sandbox(
     skill_zip: bytes,
     prompt: str,

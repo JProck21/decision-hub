@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from decision_hub.models import (
     AuditLogEntry,
     EvalReport,
+    EvalRun,
     Organization,
     OrgMember,
     Skill,
@@ -228,6 +229,47 @@ eval_reports_table = Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+)
+
+eval_runs_table = Table(
+    "eval_runs",
+    metadata,
+    Column(
+        "id",
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.func.gen_random_uuid(),
+    ),
+    Column(
+        "version_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("versions.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "user_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    ),
+    Column("agent", String, nullable=False),
+    Column("judge_model", String, nullable=False),
+    Column("status", String, nullable=False, server_default="pending"),
+    Column("stage", String, nullable=True),
+    Column("current_case", String, nullable=True),
+    Column("current_case_index", sa.Integer, nullable=True),
+    Column("total_cases", sa.Integer, nullable=False),
+    Column("heartbeat_at", DateTime(timezone=True), nullable=True),
+    Column("log_s3_prefix", Text, nullable=False),
+    Column("log_seq", sa.Integer, nullable=False, server_default="0"),
+    Column("error_message", Text, nullable=True),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
 )
 
 
@@ -1255,3 +1297,165 @@ def find_eval_report_by_skill(
     if row is None:
         return None
     return _row_to_eval_report(row)
+
+
+# ---------------------------------------------------------------------------
+# Eval run queries
+# ---------------------------------------------------------------------------
+
+
+def _row_to_eval_run(row: sa.Row) -> EvalRun:
+    """Map a database row to an EvalRun model."""
+    return EvalRun(
+        id=row.id,
+        version_id=row.version_id,
+        user_id=row.user_id,
+        agent=row.agent,
+        judge_model=row.judge_model,
+        status=row.status,
+        stage=row.stage,
+        current_case=row.current_case,
+        current_case_index=row.current_case_index,
+        total_cases=row.total_cases,
+        heartbeat_at=row.heartbeat_at,
+        log_s3_prefix=row.log_s3_prefix,
+        log_seq=row.log_seq,
+        error_message=row.error_message,
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+    )
+
+
+def insert_eval_run(
+    conn: Connection,
+    version_id: UUID,
+    user_id: UUID,
+    agent: str,
+    judge_model: str,
+    total_cases: int,
+    log_s3_prefix: str,
+    run_id: UUID | None = None,
+) -> EvalRun:
+    """Insert a new eval run row (status=pending) before spawning the worker.
+
+    When run_id is provided, uses it as the primary key instead of letting
+    the DB generate one. This allows the S3 prefix to be set correctly
+    before insert (prefix depends on the run ID).
+    """
+    values = dict(
+        version_id=version_id,
+        user_id=user_id,
+        agent=agent,
+        judge_model=judge_model,
+        total_cases=total_cases,
+        log_s3_prefix=log_s3_prefix,
+    )
+    if run_id is not None:
+        values["id"] = run_id
+
+    stmt = (
+        sa.insert(eval_runs_table)
+        .values(**values)
+        .returning(*eval_runs_table.c)
+    )
+    row = conn.execute(stmt).one()
+    return _row_to_eval_run(row)
+
+
+def update_eval_run_status(
+    conn: Connection,
+    run_id: UUID,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    current_case: str | None = None,
+    current_case_index: int | None = None,
+    log_seq: int | None = None,
+    error_message: str | None = None,
+    completed_at: datetime | None = None,
+) -> None:
+    """Update eval run operational state and bump heartbeat."""
+    values: dict = {"heartbeat_at": sa.func.now()}
+    if status is not None:
+        values["status"] = status
+    if stage is not None:
+        values["stage"] = stage
+    if current_case is not None:
+        values["current_case"] = current_case
+    if current_case_index is not None:
+        values["current_case_index"] = current_case_index
+    if log_seq is not None:
+        values["log_seq"] = log_seq
+    if error_message is not None:
+        values["error_message"] = error_message
+    if completed_at is not None:
+        values["completed_at"] = completed_at
+
+    stmt = (
+        sa.update(eval_runs_table)
+        .where(eval_runs_table.c.id == run_id)
+        .values(**values)
+    )
+    conn.execute(stmt)
+
+
+def update_eval_run_heartbeat(conn: Connection, run_id: UUID) -> None:
+    """Lightweight heartbeat-only update."""
+    stmt = (
+        sa.update(eval_runs_table)
+        .where(eval_runs_table.c.id == run_id)
+        .values(heartbeat_at=sa.func.now())
+    )
+    conn.execute(stmt)
+
+
+def find_eval_run(conn: Connection, run_id: UUID) -> EvalRun | None:
+    """Find an eval run by its ID."""
+    stmt = sa.select(eval_runs_table).where(eval_runs_table.c.id == run_id)
+    row = conn.execute(stmt).first()
+    if row is None:
+        return None
+    return _row_to_eval_run(row)
+
+
+def find_latest_eval_run_for_version(
+    conn: Connection, version_id: UUID
+) -> EvalRun | None:
+    """Find the most recent eval run for a given version."""
+    stmt = (
+        sa.select(eval_runs_table)
+        .where(eval_runs_table.c.version_id == version_id)
+        .order_by(eval_runs_table.c.created_at.desc())
+        .limit(1)
+    )
+    row = conn.execute(stmt).first()
+    if row is None:
+        return None
+    return _row_to_eval_run(row)
+
+
+def find_eval_runs_for_version(
+    conn: Connection, version_id: UUID
+) -> list[EvalRun]:
+    """List all eval runs for a version, newest first."""
+    stmt = (
+        sa.select(eval_runs_table)
+        .where(eval_runs_table.c.version_id == version_id)
+        .order_by(eval_runs_table.c.created_at.desc())
+    )
+    rows = conn.execute(stmt).all()
+    return [_row_to_eval_run(row) for row in rows]
+
+
+def find_active_eval_runs_for_user(
+    conn: Connection, user_id: UUID, limit: int = 10
+) -> list[EvalRun]:
+    """Find recent eval runs for a user, newest first."""
+    stmt = (
+        sa.select(eval_runs_table)
+        .where(eval_runs_table.c.user_id == user_id)
+        .order_by(eval_runs_table.c.created_at.desc())
+        .limit(limit)
+    )
+    rows = conn.execute(stmt).all()
+    return [_row_to_eval_run(row) for row in rows]
