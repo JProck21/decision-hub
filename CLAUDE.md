@@ -96,67 +96,28 @@ uv run --package dhub pytest client/tests/ && uv run --package decision-hub-serv
 
 ## Logging
 
-The server uses **loguru** (`from loguru import logger`). The client does **not** use loguru — it uses Rich console output directly.
+The server uses **loguru** (`from loguru import logger`). The client does not — it uses Rich console output directly. Logging is configured once at startup via `setup_logging()` in `decision_hub.logging`. Log level is controlled by `LOG_LEVEL` in `server/.env.dev` / `.env.prod` (default: `INFO`). All output goes to **stderr** — no log files. A `RequestLoggingMiddleware` assigns an 8-char request ID to every HTTP request for correlation.
 
-### Setup
-
-Logging is configured once at startup via `setup_logging(settings.log_level)` in `decision_hub.logging`. It writes to **stderr only** (no log files), intercepts stdlib `logging` so third-party libraries (uvicorn, SQLAlchemy, httpx) also route through loguru, and adds a `RequestLoggingMiddleware` that assigns an 8-char request ID to every HTTP request for correlation.
-
-Log level is controlled by `LOG_LEVEL` in `server/.env.dev` / `server/.env.prod` (default: `INFO`).
-
-### Guidelines
-
-**Use `{}` placeholders, not f-strings** — loguru defers formatting until the message is actually emitted, so arguments are only evaluated when the log level is active:
+**Use `{}` placeholders, not f-strings** — loguru defers evaluation so arguments are only computed when the level is active:
 
 ```python
-# Good — lazy evaluation
 logger.info("Publishing {}/{} version={}", org_slug, skill_name, version_id)
-
-# Bad — always evaluated, even if level is above INFO
-logger.info(f"Publishing {org_slug}/{skill_name} version={version_id}")
 ```
 
-**Pick the right level:**
+**Use `logger.opt(exception=True)`** to attach tracebacks — don't format exceptions into the message string.
 
-| Level | When to use |
-|-------|------------|
-| `logger.debug(...)` | Internal state useful during development (variable values, branch taken, intermediate results). Should be safe to leave in permanently. |
-| `logger.info(...)` | Key lifecycle events: request handled, task started/finished, resource created/deleted. One or two per "business action" — enough to follow the happy path in prod. |
-| `logger.warning(...)` | Something unexpected that the code recovered from (fallback used, retry triggered, input quirky but accepted). |
-| `logger.error(...)` | An operation failed and could not be recovered. Pair with `logger.opt(exception=True).error(...)` to include the traceback. |
+**Log in API/infra layers, not in domain functions.** Domain functions return values or raise — the caller decides what to log.
 
-**Include context that aids debugging** — log the identifiers someone would grep for when investigating an issue (user, org, skill name, case name, status code):
-
-```python
-logger.info("Eval complete for {}/{}: passed={} failed={}", org, skill, passed, failed)
-logger.warning("Sandbox exit_code={} for case '{}'", exit_code, case.name)
-```
-
-**Capture exceptions properly:**
-
-```python
-try:
-    ...
-except SomeError:
-    logger.opt(exception=True).error("Failed to publish {}/{}", org, name)
-    raise
-```
-
-**Don't log inside pure/domain functions.** Keep logging in the API, infrastructure, and orchestration layers. Domain functions should return values or raise exceptions — let the caller decide what to log.
+**Include greppable identifiers** (org, skill, case name, status code) — not just human prose.
 
 ### Inspecting Logs
 
-All server logs go to stderr, captured by the container runtime (Modal / Docker).
-
 ```bash
-# Modal (deployed): stream live logs from the running app
+# Stream live logs from Modal
 modal app logs decision-hub          # prod
 modal app logs decision-hub-dev      # dev
 
-# Local development: logs appear directly in the terminal on stderr
-cd server && DHUB_ENV=dev uv run --package decision-hub-server uvicorn decision_hub.api.app:app
-
-# Filter by request ID (from a 400/500 response) to trace a single request
+# Filter by request ID to trace a single request
 modal app logs decision-hub-dev 2>&1 | grep "a1b2c3d4"
 ```
 
