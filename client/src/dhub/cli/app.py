@@ -24,7 +24,7 @@ def main(
         callback=_version_callback, is_eager=True,
     ),
 ) -> None:
-    """Decision Hub - The Skill Manager for Data Science AI Agents."""
+    """Decision Hub - The AI Skill Manager for Data Science Agents."""
 
 # Register top-level commands
 from dhub.cli.auth import login_command, logout_command  # noqa: E402

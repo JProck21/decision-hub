@@ -1,4 +1,4 @@
-# dhub-cli: The Skill Manager for Data Science AI Agents
+# dhub-cli: The AI Skill Manager for Data Science Agents
 
 **Decision Hub** is a CLI-first registry for publishing, discovering, and installing *Skills* — modular packages of code and prompts that AI coding agents (Claude, Cursor, Codex, Gemini, OpenCode) can use.
 

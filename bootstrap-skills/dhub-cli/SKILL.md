@@ -1,10 +1,10 @@
 ---
 name: dhub-cli
-description: Guide for using the dhub CLI — the skill manager for data science AI agents. Covers authentication, publishing, installing, running skills, managing API keys, eval reports, and troubleshooting. Use when users ask about dhub commands, skill publishing workflows, or need help with the Decision Hub CLI.
+description: Guide for using the dhub CLI — the AI skill manager for data science agents. Covers authentication, publishing, installing, running skills, managing API keys, eval reports, and troubleshooting. Use when users ask about dhub commands, skill publishing workflows, or need help with the Decision Hub CLI.
 ---
 # dhub CLI Guide
 
-`dhub` is the skill manager for data science AI agents. It publishes, discovers, installs, and runs Skills — modular packages (code + prompts) that agents like Claude, Cursor, Codex, and Gemini can use.
+`dhub` is the AI skill manager for data science agents. It publishes, discovers, installs, and runs Skills — modular packages (code + prompts) that agents like Claude, Cursor, Codex, and Gemini can use.
 
 ## Installation
 

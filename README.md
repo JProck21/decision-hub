@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Decision Hub — The Skill Manager for Data Science AI Agents" width="100%">
+  <img src="assets/banner.png" alt="Decision Hub — The AI Skill Manager for Data Science Agents" width="100%">
 </p>
 
 **Decision Hub** is a CLI-first registry for publishing, discovering, and installing *Skills* — modular packages of code and prompts that AI coding agents (Claude, Cursor, Codex, Gemini, OpenCode) can use. Publish a skill once, install it into any supported agent with one command.
 
 ## Why Decision Hub
 
-**The Skill Manager for Data Science AI Agents.**
+**The AI Skill Manager for Data Science Agents.**
 Publish, discover, and securely install skills that work across Claude, Cursor, Gemini, and more.
 
 - **🏢 Organization Namespaces:** Publish skills to your GitHub organization's namespace (`acme-corp/deploy-tool`) for your team to use. Zero config—just login and publish.
