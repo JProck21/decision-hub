@@ -1,4 +1,4 @@
-.PHONY: help lint fmt test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish
+.PHONY: help lint lint-frontend fmt test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -8,9 +8,12 @@ help: ## Show this help
 # Code quality
 # ---------------------------------------------------------------------------
 
-lint: ## Run ruff linter + format check
+lint: lint-frontend ## Run all linters (ruff + frontend)
 	uvx ruff check .
 	uvx ruff format --check .
+
+lint-frontend: ## Run frontend type check + ESLint
+	cd frontend && npx tsc -b && npx eslint .
 
 fmt: ## Auto-fix lint issues and format code
 	uvx ruff check --fix .
@@ -23,10 +26,10 @@ fmt: ## Auto-fix lint issues and format code
 test: test-client test-server ## Run all tests
 
 test-client: ## Run client tests
-	uv run --package dhub-cli pytest client/tests/ -v
+	uv run --package dhub-cli --extra dev pytest client/tests/ -v
 
 test-server: ## Run server tests
-	uv run --package decision-hub-server pytest server/tests/ -v
+	uv run --package decision-hub-server --extra dev pytest server/tests/ -v
 
 # ---------------------------------------------------------------------------
 # Migrations

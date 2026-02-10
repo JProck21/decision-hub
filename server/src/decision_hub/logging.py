@@ -40,25 +40,17 @@ class _InterceptHandler(logging.Handler):
                 continue
             break
 
-        logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def _format_record(record: dict) -> str:
     """Build the log format string, including request_id when bound."""
     # Base format
-    fmt = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-        "<level>{level: <8}</level> | "
-    )
+    fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
     # Include request_id when present (bound via contextualize)
     if record["extra"].get("request_id"):
         fmt += "<yellow>{extra[request_id]}</yellow> | "
-    fmt += (
-        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-        "<level>{message}</level>\n"
-    )
+    fmt += "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>\n"
     if record["exception"]:
         fmt += "{exception}"
     return fmt
@@ -119,7 +111,7 @@ class RequestLoggingMiddleware:
 
         # Extract username from headers if present (set by auth)
         user = ""
-        for name, value in scope.get("headers", []):
+        for name, _value in scope.get("headers", []):
             if name == b"authorization":
                 # Don't log the token, just note auth is present
                 user = "(authed)"

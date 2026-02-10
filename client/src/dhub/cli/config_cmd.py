@@ -15,10 +15,7 @@ def set_default_org_command() -> None:
     config = load_config()
 
     if not config.orgs:
-        console.print(
-            "[red]Error: No namespaces available. "
-            "Run [bold]dhub login[/bold] to sync your orgs.[/]"
-        )
+        console.print("[red]Error: No namespaces available. Run [bold]dhub login[/bold] to sync your orgs.[/]")
         raise typer.Exit(1)
 
     console.print("Available namespaces:")
