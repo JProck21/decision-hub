@@ -35,7 +35,7 @@ class _InterceptHandler(logging.Handler):
         frame, depth = logging.currentframe(), 2
         while frame is not None:
             if frame.f_code.co_filename == logging.__file__:
-                frame = frame.f_back
+                frame = frame.f_back  # type: ignore[assignment]  # f_back is Optional; loop handles None
                 depth += 1
                 continue
             break

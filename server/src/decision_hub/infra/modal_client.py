@@ -6,6 +6,7 @@ skill tests inside Modal sandboxes with injected API keys.
 
 import shlex
 from dataclasses import dataclass
+from typing import Any
 
 from loguru import logger
 
@@ -55,7 +56,7 @@ def get_agent_config(agent_name: str) -> AgentSandboxConfig:
 
 # Lightweight validation endpoints per provider.
 # Each maps key_env_var -> (url, headers_builder, method).
-_KEY_VALIDATION = {
+_KEY_VALIDATION: dict[str, dict[str, Any]] = {
     "ANTHROPIC_API_KEY": {
         "url": "https://api.anthropic.com/v1/models",
         "headers": lambda key: {
@@ -262,7 +263,7 @@ def _run_agent_in_sandbox(
     _run_in_sandbox(sb, "bash", "-c", f"nohup /tmp/run_agent.sh &\necho $! > {pid_file}")
 
     start = time.monotonic()
-    elapsed = 0
+    elapsed = 0.0
 
     while elapsed < max_wait:
         time.sleep(poll_interval)

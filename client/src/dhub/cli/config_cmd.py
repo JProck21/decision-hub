@@ -23,7 +23,7 @@ def set_default_org_command() -> None:
         marker = " [cyan](current default)[/]" if org == config.default_org else ""
         console.print(f"  {i}. {org}{marker}")
 
-    choices = {str(i): org for i, org in enumerate(config.orgs, 1)}
+    choices: dict[str, str | None] = {str(i): org for i, org in enumerate(config.orgs, 1)}
     choices[str(len(config.orgs) + 1)] = None
     console.print(f"  {len(config.orgs) + 1}. (none)")
 

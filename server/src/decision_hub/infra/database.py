@@ -7,6 +7,7 @@ frozen dataclass instances from decision_hub.models.
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -1072,7 +1073,7 @@ def insert_audit_log(
     Returns:
         The newly created AuditLogEntry.
     """
-    values = {
+    values: dict[str, Any] = {
         "org_slug": org_slug,
         "skill_name": skill_name,
         "semver": semver,

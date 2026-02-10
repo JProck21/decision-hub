@@ -60,6 +60,7 @@ make test            # run all tests (client + server)
 make test-client     # run client tests only
 make test-server     # run server tests only
 make lint            # check linting + formatting
+make typecheck       # run mypy type checks
 make fmt             # auto-fix lint issues and format code
 make check-migrations # check for duplicate migration sequence numbers
 make migrate-dev     # apply migrations to dev database
@@ -85,11 +86,12 @@ Migration files live in `server/migrations/` with numeric prefixes (e.g. `008_ad
 
 ## Linting & Formatting
 
-The project uses **ruff** for linting and formatting, configured in the root `pyproject.toml`. Pre-commit hooks run ruff automatically on every commit (install once with `make install-hooks`).
+The project uses **ruff** for linting and formatting, and **mypy** for type checking, both configured in the root `pyproject.toml`. Pre-commit hooks run ruff automatically on every commit (install once with `make install-hooks`). Mypy runs in CI only (not pre-commit).
 
 ```bash
-make lint   # check only (CI runs this)
-make fmt    # auto-fix + format
+make lint       # check only (CI runs this)
+make typecheck  # mypy type checks (CI runs this)
+make fmt        # auto-fix + format
 ```
 
 ## Running Tests
@@ -110,13 +112,13 @@ make test-server       # server only
 
 ## Design Principles
 
-- **Single responsibility**: Small, single-purpose functions with one clear reason to change 
-- **Clear interfaces**: Descriptive names, type hints, explicit signatures - obvious inputs, outputs, and behavior 
-- **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture 
--**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8 
-- **YAGNI**: No abstractions or features "just in case" - add complexity only for concrete needs 
-- **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort 
-- **Don't worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks 
+- **Single responsibility**: Small, single-purpose functions with one clear reason to change
+- **Clear interfaces**: Descriptive names, type hints, explicit signatures - obvious inputs, outputs, and behavior
+- **Domain/infrastructure separation**: Keep business logic independent from frameworks, I/O, databases. UI, persistence, and external services are replaceable adapters around a clean core - **Testing as design**: Design for fast, focused unit tests. Pure functions and small units guide architecture
+-**Readability over cleverness**: Straightforward, idiomatic Python over opaque tricks. Follow PEP 8
+- **YAGNI**: No abstractions or features "just in case" - add complexity only for concrete needs
+- **Continuous refactoring**: Ship the simplest thing that works, refactor as requirements evolve. Routine maintenance, not heroic effort
+- **Don't worship backward compatibility**: Don't freeze bad designs to avoid breaking changes. Provide clear migration paths instead of stacking hacks
 - **DRY** do not repetat yourself, refactor the code and ensure each piece of logic has a single, clear, authoritative implementation instead of being duplicated across the codebase
 
 ## Logging
@@ -202,7 +204,8 @@ sb.terminate()
 ## CI
 
 GitHub Actions runs on every PR to `main`:
-- **lint**: ruff check + format (non-blocking until cleanup sprint)
+- **lint**: ruff check + format
+- **typecheck**: mypy type checks
 - **test-client**: client pytest suite
 - **test-server**: server pytest suite
 - **lint-frontend**: TypeScript type check + ESLint

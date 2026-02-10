@@ -1,4 +1,4 @@
-.PHONY: help lint lint-frontend fmt test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish
+.PHONY: help lint lint-frontend fmt typecheck test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -11,6 +11,9 @@ help: ## Show this help
 lint: lint-frontend ## Run all linters (ruff + frontend)
 	uvx ruff check .
 	uvx ruff format --check .
+
+typecheck: ## Run mypy type checks
+	uvx mypy client/src/ server/src/ shared/src/
 
 lint-frontend: ## Run frontend type check + ESLint
 	cd frontend && npx tsc -b && npx eslint .

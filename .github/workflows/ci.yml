@@ -13,8 +13,6 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    # TODO: remove continue-on-error after initial lint cleanup sprint
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
@@ -49,6 +47,19 @@ jobs:
           python-version: "3.11"
       - name: Run server tests
         run: uv run --package decision-hub-server --extra dev pytest server/tests/ -v
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run mypy type checks
+        run: uvx mypy client/src/ server/src/ shared/src/
 
   lint-frontend:
     runs-on: ubuntu-latest
