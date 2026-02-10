@@ -14,6 +14,7 @@ This is a **uv workspace monorepo** with two independent packages:
 - **OpenAI** for  LLM
 - **Pydantic** for data validation and settings
 - **boto3** for S3 access
+- **loguru** for server logging (see Logging section below)
 
 
 **Important**: Always use `uv run` to execute Python code, not `python` directly.
