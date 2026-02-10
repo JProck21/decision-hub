@@ -34,10 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: uv sync --package dhub-cli --dev
       - name: Run client tests
-        run: uv run --package dhub-cli pytest client/tests/ -v
+        run: uv run --package dhub-cli --extra dev pytest client/tests/ -v
 
   test-server:
     runs-on: ubuntu-latest
@@ -49,10 +47,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: uv sync --package decision-hub-server --dev
       - name: Run server tests
-        run: uv run --package decision-hub-server pytest server/tests/ -v
+        run: uv run --package decision-hub-server --extra dev pytest server/tests/ -v
 
   check-migrations:
     runs-on: ubuntu-latest
