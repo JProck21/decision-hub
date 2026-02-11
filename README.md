@@ -4,24 +4,6 @@
 
 **Decision Hub** is a CLI-first registry for publishing, discovering, and installing *Skills* — modular packages of code and prompts that AI coding agents (Claude, Cursor, Codex, Gemini, OpenCode) can use. Publish a skill once, install it into any supported agent with one command.
 
-## Why Decision Hub
-
-**Agents that extend themselves.** Decision Hub ships as a skill itself. Install it into Claude Code (or any supported agent), and the agent can discover new skills in natural language mid-conversation — `dhub ask "analyze A/B test results"` — then install and use them without human intervention. The registry becomes a live capability layer that agents draw from on demand.
-
-**Publish from anywhere.** Point `dhub publish` at a local directory or a GitHub repo URL and every valid `SKILL.md` inside is discovered, versioned, and published. One command turns a monorepo of skills into a registry.
-
-**Private skills for your team.** Skills can be scoped to your GitHub organization. Only members see and install them — so proprietary tooling stays internal while still benefiting from the same registry workflow.
-
-**Install once, use everywhere.** A single `dhub install` downloads a skill once and symlinks it into every agent's skill directory — Claude, Cursor, Codex, Gemini, OpenCode. No duplication, no per-agent setup.
-
-**Security gauntlet.** Every publish is scanned for shell injection, credential exfiltration, and other dangerous patterns. Skills get a trust grade (A/B/C/F) before they ever reach the registry. Grade F is rejected outright; Grade C requires an explicit `--allow-risky` flag to install.
-
-**Automated evals in sandboxes.** Skills ship with eval cases that run automatically on publish — each case executes in an isolated Modal sandbox with the configured agent, an LLM judge scores the output, and the results are published as a report.
-
-**Executable skills with the SKILL.md format.** Builds on the [Agent Skills spec](https://agentskills.io/specification) with `runtime` (language, entrypoint, dependencies, env vars) and `evals` (agent, judge model) blocks — so skills can be runnable programs with reproducible environments, not just static prompts.
-
-**Zero-config namespaces.** Your GitHub username and org memberships become your publishing namespaces automatically on login. No accounts to create, no orgs to manage.
-
 ## Installation
 
 ```bash
@@ -41,85 +23,35 @@ dhub login
 # 2. Scaffold a new skill
 dhub init my-skill
 
-# 3. Publish it under your namespace
-dhub publish myuser/my-skill ./my-skill
+# 3. Publish it (org auto-detected from your GitHub login)
+dhub publish ./my-skill
 
 # 4. Install it for your agents
 dhub install myuser/my-skill
 
-# 5. Run it (if it has a runtime)
+# 5. Run it (if it has a runtime block)
 dhub run myuser/my-skill
 ```
 
-## Namespaces
+## Why Decision Hub
 
-Decision Hub mirrors your GitHub identity — there are no separate accounts or manual org creation.
+**Agents that extend themselves.** Decision Hub ships as a skill itself. Install it into Claude Code (or any supported agent), and the agent can discover new skills mid-conversation — `dhub ask "analyze A/B test results"` — then install and use them without human intervention.
 
-- **Personal namespace**: When you `dhub login`, your GitHub username becomes your personal namespace. Publish skills as `username/skill-name`.
-- **Organization namespaces**: Your GitHub organization memberships are automatically synced on each login. If you belong to `acme-corp` on GitHub, you can publish as `acme-corp/skill-name`.
-- **No manual creation**: Namespaces are derived from GitHub. There is no `org create` command.
+**Publish from anywhere.** Point `dhub publish` at a local directory or a GitHub repo URL and every `SKILL.md` inside is discovered, versioned, and published automatically.
 
-```bash
-# See all namespaces you can publish to
-dhub org list
+**Private skills for your team.** Skills scoped to your GitHub organization are only visible to members — proprietary tooling stays internal while using the same registry workflow.
 
-# Set a default namespace so you don't have to type it every time
-dhub config default-org
-```
+**Install once, use everywhere.** A single `dhub install` downloads a skill and symlinks it into every detected agent's skill directory. No duplication, no per-agent setup.
 
-## CLI Reference
+**Security gauntlet.** Every publish is scanned for shell injection, credential exfiltration, and other dangerous patterns. Skills receive a trust grade (A/B/C/F). Grade F is rejected; Grade C requires `--allow-risky` to install.
 
-### Authentication
+**Automated evals.** Skills ship with eval cases that run on publish — each executes in an isolated sandbox, an LLM judge scores the output, and results are published as a report.
 
-| Command | Description |
-|---------|-------------|
-| `dhub login [--api-url URL]` | Authenticate via GitHub Device Flow |
-| `dhub logout` | Remove stored token |
-| `dhub env` | Show active environment, config path, and API URL |
-
-### Skills
-
-| Command | Description |
-|---------|-------------|
-| `dhub init [PATH]` | Scaffold a new skill project with `SKILL.md` and `src/` |
-| `dhub publish [ORG/SKILL] [PATH]` | Publish a skill to the registry |
-| `dhub install ORG/SKILL [-v VERSION] [--agent AGENT] [--allow-risky]` | Install a skill from the registry |
-| `dhub uninstall ORG/SKILL` | Remove a locally installed skill and its agent symlinks |
-| `dhub list` | List all published skills on the registry |
-| `dhub delete ORG/SKILL [-v VERSION]` | Delete a skill version (or all versions) |
-| `dhub run ORG/SKILL [ARGS...]` | Run a locally installed skill using its configured runtime |
-| `dhub ask QUERY` | Search for skills using natural language |
-| `dhub eval-report ORG/SKILL@VERSION` | View the agent evaluation report for a skill version |
-| `dhub logs [SKILL_REF] [--follow]` | View or tail eval run logs in real-time |
-
-### Publish options
-
-```bash
-# First publish defaults to 0.1.0, subsequent publishes auto-bump patch
-dhub publish myorg/my-skill ./path/to/skill
-
-# Explicit version bumps
-dhub publish myorg/my-skill --patch     # 1.2.3 → 1.2.4
-dhub publish myorg/my-skill --minor     # 1.2.3 → 1.3.0
-dhub publish myorg/my-skill --major     # 1.2.3 → 2.0.0
-dhub publish myorg/my-skill --version 2.0.0  # exact version
-```
-
-Both arguments are positional and optional. If only one is given, Decision Hub infers whether it's a skill reference or a path. If omitted, defaults to the current directory and requires a default org to be set.
-
-### Organizations & Config
-
-| Command | Description |
-|---------|-------------|
-| `dhub org list` | List namespaces you can publish to |
-| `dhub config default-org` | Set the default namespace for publishing |
-| `dhub keys add KEY_NAME` | Add an API key (prompts for value securely) |
-| `dhub keys list` | List stored API key names |
-| `dhub keys remove KEY_NAME` | Remove a stored API key |
+**Zero-config namespaces.** Your GitHub username and org memberships become publishing namespaces on login. No accounts to create, no orgs to manage.
 
 ## SKILL.md Format
 
-Each skill is a directory containing a `SKILL.md` manifest file. The front matter defines metadata; the body is the system prompt injected into the agent.
+Each skill is a directory containing a `SKILL.md` manifest. The YAML front matter defines metadata; the body is the system prompt injected into the agent. Builds on the [Agent Skills spec](https://agentskills.io/specification).
 
 ```yaml
 ---
@@ -148,6 +80,75 @@ when the skill is activated.
 
 Eval cases live in `evals/*.yaml` files inside the skill directory and are included in the published artifact.
 
+## CLI Reference
+
+### Authentication
+
+| Command | Description |
+|---------|-------------|
+| `dhub login` | Authenticate via GitHub Device Flow |
+| `dhub logout` | Remove stored token |
+| `dhub env` | Show active environment, config path, and API URL |
+
+### Publishing
+
+```bash
+# Publish all skills found under a directory
+# Org is auto-detected from login; skill name comes from SKILL.md
+dhub publish ./path/to/skills
+
+# Publish from a GitHub repo URL
+dhub publish https://github.com/org/repo
+
+# Version control (default: auto-bump patch from 0.1.0)
+dhub publish ./my-skill --patch          # 1.2.3 → 1.2.4 (default)
+dhub publish ./my-skill --minor          # 1.2.3 → 1.3.0
+dhub publish ./my-skill --major          # 1.2.3 → 2.0.0
+dhub publish ./my-skill --version 2.0.0  # explicit version
+
+# Publish a specific branch/tag from a git repo
+dhub publish https://github.com/org/repo --ref v1.0
+```
+
+### Installing & Running
+
+| Command | Description |
+|---------|-------------|
+| `dhub install ORG/SKILL` | Install a skill and symlink into all detected agents |
+| `dhub install ORG/SKILL -v VERSION` | Install a specific version |
+| `dhub install ORG/SKILL --agent claude` | Install for a specific agent only |
+| `dhub install ORG/SKILL --allow-risky` | Allow installing C-grade skills |
+| `dhub uninstall ORG/SKILL` | Remove a skill and its agent symlinks |
+| `dhub run ORG/SKILL [ARGS...]` | Run a locally installed skill |
+
+### Discovery
+
+| Command | Description |
+|---------|-------------|
+| `dhub list` | List all published skills |
+| `dhub ask "QUERY"` | Search for skills using natural language |
+| `dhub init [PATH]` | Scaffold a new skill project |
+
+### Evals
+
+| Command | Description |
+|---------|-------------|
+| `dhub eval-report ORG/SKILL@VERSION` | View the evaluation report for a version |
+| `dhub logs` | List recent eval runs |
+| `dhub logs ORG/SKILL [--follow]` | Tail eval logs for the latest version |
+| `dhub logs ORG/SKILL@VERSION --follow` | Tail eval logs for a specific version |
+| `dhub logs RUN_ID --follow` | Tail a specific eval run by ID |
+
+### Organizations & Config
+
+| Command | Description |
+|---------|-------------|
+| `dhub org list` | List namespaces you can publish to |
+| `dhub config default-org` | Set the default namespace for publishing |
+| `dhub keys add KEY_NAME` | Add an API key (prompts for value securely) |
+| `dhub keys list` | List stored API key names |
+| `dhub keys remove KEY_NAME` | Remove a stored API key |
+
 ## Supported Agents
 
 Skills are installed as symlinks into each agent's skill directory:
@@ -160,51 +161,45 @@ Skills are installed as symlinks into each agent's skill directory:
 | OpenCode | `~/.config/opencode/skills/{skill}` |
 | Gemini | `~/.gemini/skills/{skill}` |
 
-Use `--agent claude` (or `cursor`, `codex`, `opencode`, `gemini`, `all`) with `dhub install` to target specific agents. By default, all detected agents are linked.
+By default, `dhub install` symlinks into all detected agents. Use `--agent NAME` to target a specific one.
 
 ## Safety & Evals
 
-Every published skill goes through a two-stage safety pipeline:
+Every published skill goes through a two-stage pipeline:
 
 ### Security Gauntlet
 
-A static analysis pass that scans for dangerous patterns (shell injection, file exfiltration, credential access). Skills receive a letter grade:
+An automated scan for dangerous patterns (shell injection, file exfiltration, credential access). Skills receive a letter grade:
 
-| Grade | Meaning | Install behavior |
-|-------|---------|-----------------|
-| **A** | Clean — no elevated permissions or risky patterns | Installs normally |
+| Grade | Meaning | Behavior |
+|-------|---------|----------|
+| **A** | Clean | Installs normally |
 | **B** | Elevated permissions detected | Warning shown on install |
-| **C** | Ambiguous or risky patterns | Requires `--allow-risky` flag |
-| **F** | Fails safety checks | Rejected at publish time (HTTP 422) |
+| **C** | Risky patterns | Requires `--allow-risky` flag |
+| **F** | Fails safety checks | Rejected at publish time |
 
 ### Agent Evaluation
 
-If the skill includes an `evals` block and `evals/*.yaml` cases, an automated evaluation pipeline runs after publishing:
+If the skill includes an `evals` block and `evals/*.yaml` cases, an evaluation pipeline runs after publishing:
 
-1. **Sandbox execution** — each eval case runs in an isolated Modal sandbox with the configured agent
-2. **Exit code check** — non-zero exits are recorded as errors
-3. **LLM judge** — an LLM evaluates the agent's output against the expected criteria
+1. Each eval case runs in an isolated Modal sandbox with the configured agent
+2. An LLM judge scores the agent's output against expected criteria
+3. Results are published as a report
 
-The CLI auto-attaches to the live log stream after publish. View results with `dhub eval-report org/skill@version` or tail logs with `dhub logs org/skill --follow`.
+The CLI auto-attaches to the live log stream after publish. View results anytime with `dhub eval-report` or `dhub logs --follow`.
 
 ## Architecture
 
-This repository is a **uv workspace monorepo** with three packages:
+This is a **uv workspace monorepo** with four components:
 
-| Package | Directory | Import path | Description |
-|---------|-----------|-------------|-------------|
-| `dhub-cli` | `client/` | `dhub.*` | Open-source CLI tool |
-| `decision-hub-server` | `server/` | `decision_hub.*` | Private backend API |
-| `dhub-core` | `shared/` | `dhub_core.*` | Shared domain logic and validation |
+| Component | Directory | Import path | Description |
+|-----------|-----------|-------------|-------------|
+| `dhub-cli` | `client/` | `dhub.*` | Open-source CLI (published to PyPI) |
+| `decision-hub-server` | `server/` | `decision_hub.*` | Backend API (deployed on Modal) |
+| `dhub-core` | `shared/` | `dhub_core.*` | Shared domain models and validation |
+| Frontend | `frontend/` | — | React + TypeScript web UI |
 
-**Tech stack:**
-
-- **CLI**: Python — Typer + Rich
-- **API**: FastAPI on Modal
-- **Database**: PostgreSQL (Supabase)
-- **Storage**: S3 for skill artifacts
-- **Compute**: Modal for sandboxed evaluations
-- **Search**: Gemini LLM for natural language discovery
+**Tech stack:** Python 3.11+ / Typer + Rich (CLI) / FastAPI (API) / PostgreSQL (database) / S3 (artifact storage) / Modal (sandboxed evals) / Gemini (natural language search)
 
 ## Development
 
@@ -212,45 +207,34 @@ This repository is a **uv workspace monorepo** with three packages:
 # Install all dependencies
 uv sync --all-packages --all-extras
 
-# Run client tests
-uv run --package dhub pytest client/tests/
+# Run tests
+make test              # all tests
+make test-client       # client only
+make test-server       # server only
 
-# Run server tests
-uv run --package decision-hub-server pytest server/tests/
+# Lint and type check
+make lint              # ruff check + format
+make typecheck         # mypy
+make fmt               # auto-fix + format
 
-# Start local dev server (from server/)
-cd server && DHUB_ENV=dev uv run --package decision-hub-server uvicorn decision_hub.api.app:create_app --factory --reload
-
-# Deploy to Modal (from server/)
-cd server && DHUB_ENV=dev modal deploy modal_app.py   # dev
-cd server && modal deploy modal_app.py                 # prod
-```
-
-### Database setup
-
-```bash
-cd server && DHUB_ENV=dev uv run --package decision-hub-server python -c "
-from decision_hub.settings import create_settings
-from decision_hub.infra.database import metadata, create_engine
-engine = create_engine(create_settings().database_url)
-metadata.create_all(engine)
-"
+# Start local dev server (must run from server/)
+cd server && DHUB_ENV=dev uv run --package decision-hub-server \
+  uvicorn decision_hub.api.app:create_app --factory --reload
 ```
 
 ### Configuration
 
-Copy `server/.env.example` to `server/.env.dev` (and/or `server/.env.prod`) and fill in your values.
+Copy `server/.env.example` to `server/.env.dev` and fill in your values. Schema changes are managed through SQL migration files in `server/migrations/` — see CLAUDE.md for details.
 
-## Environments
+### Environments
+
+The project has two independent stacks controlled by `DHUB_ENV` (`dev` | `prod`):
 
 | | Dev | Prod |
 |---|---|---|
-| `DHUB_ENV` | `dev` | `prod` (default) |
-| Server URL | `https://lfiaschi--api-dev.modal.run` | `https://lfiaschi--api.modal.run` |
+| `DHUB_ENV` | `dev` | `prod` (CLI default) |
 | Server env file | `server/.env.dev` | `server/.env.prod` |
 | CLI config | `~/.dhub/config.dev.json` | `~/.dhub/config.prod.json` |
-
-Auth tokens are stored per-environment — login once per environment:
 
 ```bash
 DHUB_ENV=dev dhub login    # dev token
