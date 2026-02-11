@@ -52,6 +52,16 @@ class Skill:
     name: str
     description: str
     download_count: int = 0
+    visibility: str = "public"
+
+
+@dataclass(frozen=True)
+class SkillAccessGrant:
+    id: UUID
+    skill_id: UUID
+    grantee_org_id: UUID
+    granted_by: UUID
+    created_at: datetime
 
 
 @dataclass(frozen=True)
