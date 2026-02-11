@@ -1046,6 +1046,16 @@ _SLUG_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 - Do not change the Modal org prefix in `_DEFAULT_API_URLS` (the original branch changed `pymc-labs` to `lfiaschi`).
 - Do not remove `MIN_CLI_VERSION` handling from `modal_app.py` secrets dict.
 
+### Reuse from PR #14 (Auto-Republish Tracker)
+
+**Implement PR #14 first.** The auto-republish tracker (see `specs/pr-14-auto-republish.md`) establishes the shared utilities for repo cloning, skill discovery, and the publish pipeline. The crawler should import and reuse these instead of inlining duplicate implementations:
+
+- `clone_repo()` / `_clone_repo()` — git clone with timeout and token injection
+- `discover_skills()` / `_discover_skills()` — recursive `SKILL.md` discovery via `rglob`
+- `_publish_one_skill()` / `_publish_skill_from_tracker()` — zip, checksum dedup, gauntlet, version bump, S3 upload
+
+Extract these into a shared module (e.g. `server/src/decision_hub/domain/repo_utils.py`) during #14, then import from the crawler.
+
 ### Dependencies
 
 - The crawler module needs `httpx` (already a server dependency).
@@ -1054,4 +1064,4 @@ _SLUG_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 
 ### Client Package Independence
 
-The Modal worker image does NOT include the `dhub-cli` client package. Functions like `clone_repo` and `discover_skills` are inlined (~20 lines each) in the crawler module. `parse_skill_md` comes from `dhub_core.manifest` (available in the Modal image).
+The Modal worker image does NOT include the `dhub-cli` client package. Functions like `clone_repo` and `discover_skills` should live in the server package (not the client). `parse_skill_md` comes from `dhub_core.manifest` (available in the Modal image).
