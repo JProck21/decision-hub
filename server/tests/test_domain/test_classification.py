@@ -63,6 +63,21 @@ def test_parse_response_missing_confidence():
     assert result.confidence == 0.0
 
 
+def test_parse_response_non_dict_json_returns_default():
+    """LLMs sometimes wrap output in arrays — should fall back gracefully."""
+    raw = '[{"category": "AI & LLM"}]'
+    result = parse_classification_response(raw)
+    assert result.category == DEFAULT_CATEGORY
+    assert result.confidence == 0.0
+
+
+def test_parse_response_json_string_returns_default():
+    raw = '"Backend & APIs"'
+    result = parse_classification_response(raw)
+    assert result.category == DEFAULT_CATEGORY
+    assert result.confidence == 0.0
+
+
 def test_parse_response_empty_string():
     result = parse_classification_response("")
     assert result.category == DEFAULT_CATEGORY

@@ -311,6 +311,7 @@ class TestPublishSkill:
             "brand-new-skill",
             "A test skill",  # description extracted from SKILL.md
             category="Other & Utilities",
+            visibility="public",
         )
         assert resp.json()["skill_id"] == str(new_skill.id)
 
@@ -687,12 +688,15 @@ class TestGetAuditLog:
     """GET /v1/skills/{org}/{skill}/audit-log -- evaluation history."""
 
     @patch("decision_hub.api.registry_routes.find_audit_logs")
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
     def test_audit_log_empty(
         self,
+        mock_find_skill: MagicMock,
         mock_find: MagicMock,
         client: TestClient,
     ) -> None:
         """Returns empty list when no audit logs exist."""
+        mock_find_skill.return_value = _make_skill(_make_org())
         mock_find.return_value = []
 
         resp = client.get("/v1/skills/test-org/my-skill/audit-log")
@@ -701,8 +705,10 @@ class TestGetAuditLog:
         assert resp.json() == []
 
     @patch("decision_hub.api.registry_routes.find_audit_logs")
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
     def test_audit_log_returns_entries(
         self,
+        mock_find_skill: MagicMock,
         mock_find: MagicMock,
         client: TestClient,
     ) -> None:
@@ -711,6 +717,7 @@ class TestGetAuditLog:
 
         from decision_hub.models import AuditLogEntry
 
+        mock_find_skill.return_value = _make_skill(_make_org())
         entry = AuditLogEntry(
             id=uuid4(),
             org_slug="test-org",
@@ -735,15 +742,85 @@ class TestGetAuditLog:
         assert data[0]["publisher"] == "testuser"
 
     @patch("decision_hub.api.registry_routes.find_audit_logs")
-    def test_audit_log_does_not_require_auth(
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
+    def test_audit_log_does_not_require_auth_for_public_skills(
         self,
+        mock_find_skill: MagicMock,
         mock_find: MagicMock,
         client: TestClient,
     ) -> None:
-        """Audit log endpoint is public."""
+        """Audit log endpoint works without auth for public skills."""
+        mock_find_skill.return_value = _make_skill(_make_org())
         mock_find.return_value = []
 
         resp = client.get("/v1/skills/test-org/my-skill/audit-log")
+
+        assert resp.status_code == 200
+
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
+    def test_audit_log_returns_404_for_invisible_skill(
+        self,
+        mock_find_skill: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Audit log returns 404 when skill is not visible (private + unauthenticated)."""
+        mock_find_skill.return_value = None
+
+        resp = client.get("/v1/skills/test-org/private-skill/audit-log")
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/skills/{org_slug}/{skill_name}/eval-report -- visibility checks
+# ---------------------------------------------------------------------------
+
+
+class TestEvalReportVisibility:
+    """Eval report endpoints should respect visibility filtering."""
+
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
+    def test_eval_report_returns_404_for_invisible_skill(
+        self,
+        mock_find_skill: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Eval report returns 404 when skill is not visible."""
+        mock_find_skill.return_value = None
+
+        resp = client.get("/v1/skills/test-org/private-skill/eval-report?semver=1.0.0")
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
+    def test_eval_report_by_version_path_returns_404_for_invisible_skill(
+        self,
+        mock_find_skill: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Eval report (path-based) returns 404 when skill is not visible."""
+        mock_find_skill.return_value = None
+
+        resp = client.get("/v1/skills/test-org/private-skill/versions/1.0.0/eval-report")
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    @patch("decision_hub.api.registry_routes.find_eval_report_by_skill")
+    @patch("decision_hub.api.registry_routes.find_skill_by_slug")
+    def test_eval_report_accessible_for_visible_skill(
+        self,
+        mock_find_skill: MagicMock,
+        mock_find_report: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Eval report is accessible when skill is visible (public)."""
+        mock_find_skill.return_value = _make_skill(_make_org())
+        mock_find_report.return_value = None
+
+        resp = client.get("/v1/skills/test-org/my-skill/eval-report?semver=1.0.0")
 
         assert resp.status_code == 200
 
@@ -1142,6 +1219,228 @@ class TestGetLatestVersion:
         resp = client.get("/v1/skills/test-org/my-skill/latest-version")
 
         assert resp.status_code == 200
+
+    @patch("decision_hub.api.registry_routes.list_user_org_ids")
+    @patch("decision_hub.api.registry_routes.resolve_latest_version")
+    def test_latest_version_passes_user_org_ids_when_authenticated(
+        self,
+        mock_resolve: MagicMock,
+        mock_list_orgs: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Authenticated requests pass user_org_ids for visibility filtering."""
+        org = _make_org()
+        skill = _make_skill(org)
+        mock_list_orgs.return_value = [org.id]
+        mock_resolve.return_value = _make_version(skill)
+
+        resp = client.get("/v1/skills/test-org/my-skill/latest-version", headers=auth_headers)
+
+        assert resp.status_code == 200
+        mock_list_orgs.assert_called_once()
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs["user_org_ids"] == [org.id]
+
+    @patch("decision_hub.api.registry_routes.resolve_latest_version")
+    def test_latest_version_unauthenticated_passes_none_org_ids(
+        self,
+        mock_resolve: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Unauthenticated requests pass user_org_ids=None (public only)."""
+        mock_resolve.return_value = None
+
+        resp = client.get("/v1/skills/test-org/private-skill/latest-version")
+
+        assert resp.status_code == 404
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs["user_org_ids"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/skills/{org_slug}/{skill_name}/download -- visibility checks
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSkillVisibility:
+    """GET /v1/skills/{org}/{skill}/download -- visibility filtering."""
+
+    @patch("decision_hub.api.registry_routes.increment_skill_downloads")
+    @patch("decision_hub.api.registry_routes.download_zip_from_s3")
+    @patch("decision_hub.api.registry_routes.list_user_org_ids")
+    @patch("decision_hub.api.registry_routes.resolve_version")
+    def test_download_passes_user_org_ids_when_authenticated(
+        self,
+        mock_resolve: MagicMock,
+        mock_list_orgs: MagicMock,
+        mock_download: MagicMock,
+        mock_increment: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+    ) -> None:
+        """Authenticated download passes user_org_ids for visibility filtering."""
+        org = _make_org()
+        skill = _make_skill(org)
+        version = _make_version(skill)
+        mock_list_orgs.return_value = [org.id]
+        mock_resolve.return_value = version
+        mock_download.return_value = b"zipdata"
+
+        resp = client.get("/v1/skills/test-org/my-skill/download", headers=auth_headers)
+
+        assert resp.status_code == 200
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs["user_org_ids"] == [org.id]
+
+    @patch("decision_hub.api.registry_routes.resolve_version")
+    def test_download_unauthenticated_passes_none_org_ids(
+        self,
+        mock_resolve: MagicMock,
+        client: TestClient,
+    ) -> None:
+        """Unauthenticated download passes user_org_ids=None (public only)."""
+        mock_resolve.return_value = None
+
+        resp = client.get("/v1/skills/test-org/private-skill/download")
+
+        assert resp.status_code == 404
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs["user_org_ids"] is None
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/publish -- visibility preservation on re-publish
+# ---------------------------------------------------------------------------
+
+
+class TestPublishVisibilityPreservation:
+    """POST /v1/publish -- visibility is preserved when not explicitly provided."""
+
+    @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
+    @patch("decision_hub.api.registry_routes.update_skill_visibility")
+    @patch("decision_hub.api.registry_routes.update_skill_description")
+    @patch("decision_hub.api.registry_routes.insert_version")
+    @patch("decision_hub.api.registry_routes.find_version")
+    @patch("decision_hub.api.registry_routes.find_skill")
+    @patch("decision_hub.api.registry_routes.upload_skill_zip")
+    @patch("decision_hub.api.registry_routes.compute_checksum")
+    @patch("decision_hub.api.registry_service.find_org_member")
+    @patch("decision_hub.api.registry_service.find_org_by_slug")
+    def test_republish_without_visibility_preserves_existing(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        mock_checksum: MagicMock,
+        mock_upload: MagicMock,
+        mock_find_skill: MagicMock,
+        mock_find_version: MagicMock,
+        mock_insert_version: MagicMock,
+        mock_update_desc: MagicMock,
+        mock_update_vis: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+        test_settings: MagicMock,
+    ) -> None:
+        """Re-publishing without --private should NOT reset visibility to public."""
+        test_settings.google_api_key = "test-key"
+        org = _make_org(sample_user_id)
+        skill = _make_skill(org)
+        skill = Skill(
+            id=skill.id, org_id=skill.org_id, name=skill.name, description=skill.description, visibility="org"
+        )
+        version = _make_version(skill, semver="2.0.0")
+
+        mock_find_org.return_value = org
+        mock_find_member.return_value = _make_member(org, sample_user_id)
+        mock_checksum.return_value = "abc123def456"
+        mock_find_skill.return_value = skill
+        mock_find_version.return_value = None
+        mock_insert_version.return_value = version
+
+        # Publish without visibility in metadata (no --private flag)
+        metadata = json.dumps({"org_slug": "test-org", "skill_name": "my-skill", "version": "2.0.0"})
+        resp = client.post(
+            "/v1/publish",
+            data={"metadata": metadata},
+            files={"zip_file": ("skill.zip", _make_skill_zip(), "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        # update_skill_visibility should NOT have been called
+        mock_update_vis.assert_not_called()
+
+    @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
+    @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.insert_audit_log")
+    @patch("decision_hub.api.registry_routes.update_skill_visibility")
+    @patch("decision_hub.api.registry_routes.update_skill_description")
+    @patch("decision_hub.api.registry_routes.insert_version")
+    @patch("decision_hub.api.registry_routes.find_version")
+    @patch("decision_hub.api.registry_routes.find_skill")
+    @patch("decision_hub.api.registry_routes.upload_skill_zip")
+    @patch("decision_hub.api.registry_routes.compute_checksum")
+    @patch("decision_hub.api.registry_service.find_org_member")
+    @patch("decision_hub.api.registry_service.find_org_by_slug")
+    def test_republish_with_explicit_visibility_updates_it(
+        self,
+        mock_find_org: MagicMock,
+        mock_find_member: MagicMock,
+        mock_checksum: MagicMock,
+        mock_upload: MagicMock,
+        mock_find_skill: MagicMock,
+        mock_find_version: MagicMock,
+        mock_insert_version: MagicMock,
+        mock_update_desc: MagicMock,
+        mock_update_vis: MagicMock,
+        mock_insert_audit: MagicMock,
+        _mock_analyze_fn: MagicMock,
+        _mock_prompt_fn: MagicMock,
+        client: TestClient,
+        auth_headers: dict[str, str],
+        sample_user_id: UUID,
+        test_settings: MagicMock,
+    ) -> None:
+        """Re-publishing with explicit visibility should update it."""
+        test_settings.google_api_key = "test-key"
+        org = _make_org(sample_user_id)
+        skill = _make_skill(org)
+        version = _make_version(skill, semver="2.0.0")
+
+        mock_find_org.return_value = org
+        mock_find_member.return_value = _make_member(org, sample_user_id)
+        mock_checksum.return_value = "abc123def456"
+        mock_find_skill.return_value = skill
+        mock_find_version.return_value = None
+        mock_insert_version.return_value = version
+
+        # Publish WITH explicit visibility
+        metadata = json.dumps(
+            {
+                "org_slug": "test-org",
+                "skill_name": "my-skill",
+                "version": "2.0.0",
+                "visibility": "org",
+            }
+        )
+        resp = client.post(
+            "/v1/publish",
+            data={"metadata": metadata},
+            files={"zip_file": ("skill.zip", _make_skill_zip(), "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        mock_update_vis.assert_called_once_with(mock_find_org.call_args[0][0], skill.id, "org")
 
 
 # ---------------------------------------------------------------------------

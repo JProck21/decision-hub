@@ -69,3 +69,7 @@ export interface SkillFile {
   content: string;
   size: number;
 }
+
+export interface TaxonomyResponse {
+  groups: Record<string, string[]>;
+}

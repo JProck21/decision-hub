@@ -49,6 +49,13 @@ def parse_classification_response(text: str) -> SkillClassification:
             confidence=0.0,
         )
 
+    if not isinstance(data, dict):
+        return SkillClassification(
+            category=DEFAULT_CATEGORY,
+            group=SUBCATEGORY_TO_GROUP[DEFAULT_CATEGORY],
+            confidence=0.0,
+        )
+
     category = data.get("category", DEFAULT_CATEGORY)
     confidence = float(data.get("confidence", 0.0))
 

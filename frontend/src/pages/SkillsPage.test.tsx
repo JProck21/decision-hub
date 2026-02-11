@@ -47,8 +47,16 @@ const SKILLS: SkillSummary[] = [
   }),
 ];
 
+const TAXONOMY = {
+  groups: {
+    Development: ["Backend & APIs", "Frontend & UI", "Mobile Development", "Programming Languages"],
+    "AI & Automation": ["AI & LLM", "Agents & Orchestration", "Prompts & Instructions"],
+  },
+};
+
 const server = setupServer(
   http.get("/v1/skills", () => HttpResponse.json(SKILLS)),
+  http.get("/v1/taxonomy", () => HttpResponse.json(TAXONOMY)),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from decision_hub.api.deps import get_connection, get_current_user_optional, get_s3_client, get_settings
 from decision_hub.api.rate_limit import RateLimiter
 from decision_hub.domain.search import build_index_entry, serialize_index
-from decision_hub.infra.database import fetch_all_skills_for_index, insert_search_log
+from decision_hub.infra.database import fetch_all_skills_for_index, insert_search_log, list_user_org_ids
 from decision_hub.infra.gemini import check_query_topicality, create_gemini_client, search_skills_with_llm
 from decision_hub.infra.storage import upload_search_log
 from decision_hub.models import User
@@ -83,7 +83,8 @@ def search_skills(
     start_time = time.monotonic()
 
     # Build index directly from the database (single source of truth)
-    rows = fetch_all_skills_for_index(conn)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    rows = fetch_all_skills_for_index(conn, user_org_ids=user_org_ids)
     if not rows:
         return SearchResponse(query=q, results="No skills in the index yet.", category=category)
 

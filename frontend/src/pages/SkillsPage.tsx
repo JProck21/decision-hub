@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Search, Package, Download, Filter, User, Tag, Layers } from "lucide-react";
-import { listSkills } from "../api/client";
+import { listSkills, getTaxonomy } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import type { SkillSummary } from "../types/api";
 import { extractOrgs, filterSkills } from "../lib/filters";
@@ -10,43 +10,9 @@ import GradeBadge from "../components/GradeBadge";
 import LoadingSpinner from "../components/LoadingSpinner";
 import styles from "./SkillsPage.module.css";
 
-const CATEGORY_TAXONOMY: Record<string, string[]> = {
-  Development: [
-    "Backend & APIs",
-    "Frontend & UI",
-    "Mobile Development",
-    "Programming Languages",
-  ],
-  "AI & Automation": [
-    "AI & LLM",
-    "Agents & Orchestration",
-    "Prompts & Instructions",
-  ],
-  "Data & Documents": ["Data & Database", "Documents & Files"],
-  "DevOps & Security": [
-    "DevOps & Cloud",
-    "Git & Version Control",
-    "Testing & QA",
-    "Security & Auth",
-  ],
-  "Business & Productivity": [
-    "Productivity & Notes",
-    "Business & Finance",
-    "Social & Communications",
-    "Content & Writing",
-  ],
-  "Media & IoT": ["Multimedia & Audio/Video", "Smart Home & IoT"],
-  Specialized: [
-    "Data Science & Statistics",
-    "Other Science & Mathematics",
-    "Blockchain & Web3",
-    "MCP & Skills",
-    "Other & Utilities",
-  ],
-};
-
 export default function SkillsPage() {
   const { data: skills, loading, error } = useApi(() => listSkills(), []);
+  const { data: taxonomy } = useApi(() => getTaxonomy(), []);
   const [search, setSearch] = useState("");
   const [orgFilter, setOrgFilter] = useState<string>("all");
   const [gradeFilter, setGradeFilter] = useState<string>("all");
@@ -147,7 +113,7 @@ export default function SkillsPage() {
             className={styles.select}
           >
             <option value="all">All Categories</option>
-            {Object.entries(CATEGORY_TAXONOMY).map(([group, subcategories]) => {
+            {Object.entries(taxonomy?.groups ?? {}).map(([group, subcategories]) => {
               const activeSubs = subcategories.filter((sub) =>
                 activeCategories.has(sub)
               );
