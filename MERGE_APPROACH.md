@@ -28,5 +28,5 @@ The original branch is archived at `REIMPLEMENTED/{original-branch}` for referen
 - [ ] **Search hardening** (topicality guard + rate limiter) — `specs/pr-17-search-hardening.md` (original: PR #17, ~1-2 hrs)
 - [ ] **Private skills** (org-level visibility + access grants) — `specs/pr-06-private-skills.md` (original: PR #6, ~2-3 hrs)
 - [ ] **Skill categorization** (taxonomy + Gemini classifier) — `specs/pr-15-skill-categorization.md` (original: PR #15, ~1-2 hrs)
-- [ ] **GitHub skills crawler** (multi-strategy discovery + Modal workers) — `specs/pr-16-github-crawler.md` (original: PR #16, ~3-4 hrs)
 - [ ] **Auto-republish tracker** (GitHub commit polling + auto-publish) — `specs/pr-14-auto-republish.md` (original: PR #14, ~2-3 hrs)
+- [ ] **GitHub skills crawler** (multi-strategy discovery + Modal workers) — `specs/pr-16-github-crawler.md` (original: PR #16, ~3-4 hrs) — reuses clone/discover/publish utilities from #14
