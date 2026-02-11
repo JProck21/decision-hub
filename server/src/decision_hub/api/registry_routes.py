@@ -296,8 +296,8 @@ def publish_skill(
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing required metadata keys: {', '.join(missing)}")
     org_slug, skill_name, version = meta["org_slug"], meta["skill_name"], meta["version"]
-    visibility = meta.get("visibility", "public")
-    if visibility not in _VALID_VISIBILITIES:
+    visibility = meta.get("visibility")
+    if visibility is not None and visibility not in _VALID_VISIBILITIES:
         raise HTTPException(
             status_code=422,
             detail=f"Invalid visibility '{visibility}'. Must be 'public' or 'org'.",
@@ -370,10 +370,11 @@ def publish_skill(
     eval_status = report.grade
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
-        skill = insert_skill(conn, org.id, skill_name, description, visibility=visibility)
+        skill = insert_skill(conn, org.id, skill_name, description, visibility=visibility or "public")
     else:
         update_skill_description(conn, skill.id, description)
-        update_skill_visibility(conn, skill.id, visibility)
+        if visibility is not None:
+            update_skill_visibility(conn, skill.id, visibility)
 
     if find_version(conn, skill.id, version) is not None:
         raise HTTPException(
@@ -483,9 +484,11 @@ def get_latest_version(
     org_slug: str,
     skill_name: str,
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> LatestVersionResponse:
     """Return the latest published version of a skill."""
-    version = resolve_latest_version(conn, org_slug, skill_name)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    version = resolve_latest_version(conn, org_slug, skill_name, user_org_ids=user_org_ids)
     if version is None:
         raise HTTPException(
             status_code=404,
@@ -545,9 +548,11 @@ def download_skill(
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
     settings: Settings = Depends(get_settings),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> Response:
     """Download a skill zip file, proxied through the server to avoid CORS issues."""
-    version = resolve_version(conn, org_slug, skill_name, spec, allow_risky=True)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    version = resolve_version(conn, org_slug, skill_name, spec, allow_risky=True, user_org_ids=user_org_ids)
     if version is None:
         raise HTTPException(
             status_code=404,

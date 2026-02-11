@@ -935,11 +935,19 @@ def resolve_latest_version(
     conn: Connection,
     org_slug: str,
     skill_name: str,
+    *,
+    user_org_ids: list[UUID] | None = None,
 ) -> Version | None:
     """Find the latest version of a skill regardless of eval_status.
 
     Used for auto-bumping: the publisher needs to know the highest
     published semver even if it hasn't passed evaluation yet.
+
+    Args:
+        conn: Active database connection.
+        org_slug: Organization slug that owns the skill.
+        skill_name: Name of the skill.
+        user_org_ids: Org IDs the caller belongs to (None = unauthenticated).
     """
     join = versions_table.join(skills_table, versions_table.c.skill_id == skills_table.c.id).join(
         organizations_table,
@@ -955,13 +963,15 @@ def resolve_latest_version(
                 skills_table.c.name == skill_name,
             )
         )
-        .order_by(
-            versions_table.c.semver_major.desc(),
-            versions_table.c.semver_minor.desc(),
-            versions_table.c.semver_patch.desc(),
-        )
-        .limit(1)
     )
+
+    stmt = _apply_visibility_filter(stmt, conn, user_org_ids)
+
+    stmt = stmt.order_by(
+        versions_table.c.semver_major.desc(),
+        versions_table.c.semver_minor.desc(),
+        versions_table.c.semver_patch.desc(),
+    ).limit(1)
 
     row = conn.execute(stmt).first()
     if row is None:
