@@ -304,6 +304,7 @@ class TestPublishSkill:
             org.id,
             "brand-new-skill",
             "A test skill",  # description extracted from SKILL.md
+            visibility="public",
         )
         assert resp.json()["skill_id"] == str(new_skill.id)
 
