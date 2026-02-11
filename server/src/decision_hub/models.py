@@ -52,6 +52,7 @@ class Skill:
     name: str
     description: str
     download_count: int = 0
+    category: str = ""
     visibility: str = "public"
 
 
@@ -236,3 +237,4 @@ class SkillIndexEntry:
     eval_status: str
     trust_score: str
     author: str = ""
+    category: str = ""
