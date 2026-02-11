@@ -1,4 +1,4 @@
-.PHONY: help lint lint-frontend fmt typecheck test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish
+.PHONY: help lint lint-frontend fmt typecheck test test-client test-server check-migrations install-hooks deploy-dev deploy-prod publish publish-cli release-cli
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -69,8 +69,14 @@ deploy-dev: ## Build frontend + deploy to dev Modal
 deploy-prod: ## Build frontend + deploy to prod Modal
 	DHUB_ENV=prod ./scripts/deploy.sh
 
-publish: ## Build and publish dhub-cli to PyPI
+publish: ## Build and publish dhub-cli to PyPI (low-level, prefer publish-cli)
 	./scripts/publish.sh
+
+publish-cli: ## Non-breaking CLI release: bump + test + publish (BUMP=patch|minor, default: patch)
+	./scripts/release-cli.sh $(or $(BUMP),patch)
+
+release-cli: ## Breaking CLI release: bump + test + publish + sync servers (BUMP=patch|minor|major, default: major)
+	./scripts/release-cli.sh $(or $(BUMP),major) --sync
 
 # ---------------------------------------------------------------------------
 # Setup

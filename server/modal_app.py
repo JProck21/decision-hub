@@ -9,6 +9,19 @@ env = os.environ.get("DHUB_ENV", "prod")
 suffix = "" if env == "prod" else f"-{env}"
 app_name = f"decision-hub{suffix}"
 
+
+def _read_env_value(key: str) -> str | None:
+    """Read a value from the local .env file (not deployed to Modal)."""
+    env_file = Path(f".env.{env}")
+    if not env_file.exists():
+        return None
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    return None
+
+
 app = modal.App(app_name)
 
 _frontend_dist = Path("../frontend/dist")
@@ -33,9 +46,15 @@ secrets = [
     modal.Secret.from_name(f"decision-hub-db{suffix}"),
     modal.Secret.from_name(f"decision-hub-secrets{suffix}"),
     modal.Secret.from_name(f"decision-hub-aws{suffix}"),
-    # Inject MODAL_APP_NAME so the web function can spawn eval tasks
-    # in the correct app (the .env file isn't deployed to Modal).
-    modal.Secret.from_dict({"MODAL_APP_NAME": app_name}),
+    # Inject values from the local .env file that aren't in Modal secrets.
+    # These are read at deploy time so server redeploys pick up changes
+    # without needing to update Modal secrets manually.
+    modal.Secret.from_dict(
+        {
+            "MODAL_APP_NAME": app_name,
+            **({"MIN_CLI_VERSION": v} if (v := _read_env_value("MIN_CLI_VERSION")) else {}),
+        }
+    ),
 ]
 
 

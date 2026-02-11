@@ -150,13 +150,25 @@ modal app logs decision-hub-dev      # dev
 modal app logs decision-hub-dev 2>&1 | grep "a1b2c3d4"
 ```
 
-## Client / Server Version Sync
+## CLI Versioning & Release
 
-The server enforces a minimum CLI version via the `MIN_CLI_VERSION` setting in `server/.env.dev` and `server/.env.prod`. When making breaking changes that require the client and server to stay in sync (new request/response fields, changed CLI argument signatures, new required headers, removed or renamed endpoints), you **must**:
+### Semver guidelines
 
-1. Bump the version in `client/pyproject.toml`
-2. Update `MIN_CLI_VERSION` in both `server/.env.dev` and `server/.env.prod` to match
-3. Redeploy the server so the middleware rejects stale clients with a clear upgrade message
+- **Patch** (`0.5.0` → `0.5.1`): Bug fixes, internal refactors. Nothing new for the user, nothing breaks.
+- **Minor** (`0.5.0` → `0.6.0`): New features — new commands, new flags, new output. Old CLI still works with the server.
+- **Major** (`0.5.0` → `1.0.0`): Breaking changes — old CLI **can't talk to the server anymore** (changed URLs, new required fields, removed endpoints). Requires server redeploy.
+
+### Release commands
+
+```bash
+make publish-cli              # non-breaking (default: patch bump)
+make publish-cli BUMP=minor   # non-breaking new feature
+make release-cli              # breaking (default: major bump) — bumps MIN_CLI_VERSION + redeploys servers
+```
+
+### How it works
+
+The server enforces a minimum CLI version via `MIN_CLI_VERSION` in `server/.env.dev` and `server/.env.prod`. The `modal_app.py` reads this value at deploy time and injects it into the container, so a server redeploy is all that's needed — no manual Modal secret updates required. `make release-cli` automates the full flow: version bump → tests → PyPI publish → MIN_CLI_VERSION update → server redeploy.
 
 ## Debugging Modal Sandboxes
 
