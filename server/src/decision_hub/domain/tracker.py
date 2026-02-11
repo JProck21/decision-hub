@@ -65,6 +65,31 @@ def fetch_latest_commit_sha(
     return resp.json()["sha"]
 
 
+def check_repo_accessible(
+    owner: str,
+    repo: str,
+    github_token: str | None = None,
+) -> bool:
+    """Check if a GitHub repo is accessible (returns True for public or auth'd private repos).
+
+    Makes a lightweight HEAD-style request to the GitHub API.
+    Returns False for 404 (private without auth) or 403 (rate-limited / forbidden).
+    """
+    headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers=headers,
+            )
+            return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def has_new_commits(
     owner: str,
     repo: str,
