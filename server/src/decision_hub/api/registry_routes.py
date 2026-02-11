@@ -4,13 +4,20 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
-from decision_hub.api.deps import get_connection, get_current_user, get_s3_client, get_settings
+from decision_hub.api.deps import (
+    get_connection,
+    get_current_user,
+    get_current_user_optional,
+    get_s3_client,
+    get_settings,
+)
 from decision_hub.api.registry_service import (
     maybe_trigger_agent_assessment,
     parse_manifest_from_content,
@@ -28,6 +35,7 @@ from decision_hub.domain.search import format_trust_score
 from decision_hub.domain.skill_manifest import extract_body, extract_description
 from decision_hub.infra.database import (
     delete_all_versions,
+    delete_skill_access_grant,
     delete_version,
     fetch_all_skills_for_index,
     find_active_eval_runs_for_user,
@@ -35,16 +43,24 @@ from decision_hub.infra.database import (
     find_eval_report_by_skill,
     find_eval_run,
     find_eval_runs_for_version,
+    find_org_by_slug,
     find_skill,
+    find_skill_by_slug,
     find_version,
     increment_skill_downloads,
     insert_audit_log,
     insert_skill,
+    insert_skill_access_grant,
     insert_version,
+    list_skill_access_grants,
+    list_user_org_ids,
+    organizations_table,
     resolve_latest_version,
     resolve_version,
     update_eval_run_status,
     update_skill_description,
+    update_skill_visibility,
+    users_table,
 )
 from decision_hub.infra.database import (
     delete_skill as delete_skill_record,
@@ -65,6 +81,8 @@ from decision_hub.settings import Settings
 
 router = APIRouter(prefix="/v1", tags=["registry"])
 public_router = APIRouter(prefix="/v1", tags=["registry"])
+
+_VALID_VISIBILITIES = {"public", "org"}
 
 
 def _parse_uuid(value: str, name: str) -> UUID:
@@ -136,6 +154,7 @@ class SkillSummary(BaseModel):
     author: str
     download_count: int = 0
     is_personal_org: bool = False
+    visibility: str = "public"
 
 
 class AuditLogResponse(BaseModel):
@@ -213,6 +232,32 @@ class EvalRunLogsResponse(BaseModel):
     current_case: str | None
 
 
+class VisibilityRequest(BaseModel):
+    visibility: str
+
+
+class VisibilityResponse(BaseModel):
+    org_slug: str
+    skill_name: str
+    visibility: str
+
+
+class AccessGrantRequest(BaseModel):
+    grantee_org_slug: str
+
+
+class AccessGrantResponse(BaseModel):
+    org_slug: str
+    skill_name: str
+    grantee_org_slug: str
+
+
+class AccessGrantListEntry(BaseModel):
+    grantee_org_slug: str
+    granted_by: str
+    created_at: str | None
+
+
 # Stale heartbeat threshold for zombie detection (5 minutes)
 _STALE_HEARTBEAT_SECONDS = 300
 
@@ -252,13 +297,21 @@ def publish_skill(
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing required metadata keys: {', '.join(missing)}")
     org_slug, skill_name, version = meta["org_slug"], meta["skill_name"], meta["version"]
+    visibility = meta.get("visibility")
+    if visibility is not None and visibility not in _VALID_VISIBILITIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid visibility '{visibility}'. Must be 'public' or 'org'.",
+        )
 
     try:
         validate_skill_name(skill_name)
         validate_semver(version)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    logger.info("Publishing {}/{} v{} by {}", org_slug, skill_name, version, current_user.username)
+    logger.info(
+        "Publishing {}/{} v{} visibility={} by {}", org_slug, skill_name, version, visibility, current_user.username
+    )
 
     org = require_org_membership(conn, org_slug, current_user.id)
 
@@ -318,9 +371,11 @@ def publish_skill(
     eval_status = report.grade
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
-        skill = insert_skill(conn, org.id, skill_name, description)
+        skill = insert_skill(conn, org.id, skill_name, description, visibility=visibility or "public")
     else:
         update_skill_description(conn, skill.id, description)
+        if visibility is not None:
+            update_skill_visibility(conn, skill.id, visibility)
 
     if find_version(conn, skill.id, version) is not None:
         raise HTTPException(
@@ -400,9 +455,11 @@ def publish_skill(
 @public_router.get("/skills", response_model=list[SkillSummary])
 def list_skills(
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> list[SkillSummary]:
     """List all published skills with their latest version info."""
-    rows = fetch_all_skills_for_index(conn)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    rows = fetch_all_skills_for_index(conn, user_org_ids=user_org_ids)
     return [
         SkillSummary(
             org_slug=row["org_slug"],
@@ -414,6 +471,7 @@ def list_skills(
             author=row.get("published_by", ""),
             download_count=row.get("download_count", 0),
             is_personal_org=row.get("is_personal_org", False),
+            visibility=row.get("visibility", "public"),
         )
         for row in rows
     ]
@@ -427,9 +485,11 @@ def get_latest_version(
     org_slug: str,
     skill_name: str,
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> LatestVersionResponse:
     """Return the latest published version of a skill."""
-    version = resolve_latest_version(conn, org_slug, skill_name)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    version = resolve_latest_version(conn, org_slug, skill_name, user_org_ids=user_org_ids)
     if version is None:
         raise HTTPException(
             status_code=404,
@@ -447,15 +507,18 @@ def resolve_skill(
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
     settings: Settings = Depends(get_settings),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> ResolveResponse:
     """Resolve a skill version and return a pre-signed download URL."""
     logger.debug("Resolving {}/{} spec={}", org_slug, skill_name, spec)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
     version = resolve_version(
         conn,
         org_slug,
         skill_name,
         spec,
         allow_risky=allow_risky,
+        user_org_ids=user_org_ids,
     )
     if version is None:
         raise HTTPException(
@@ -486,9 +549,11 @@ def download_skill(
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
     settings: Settings = Depends(get_settings),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> Response:
     """Download a skill zip file, proxied through the server to avoid CORS issues."""
-    version = resolve_version(conn, org_slug, skill_name, spec, allow_risky=True)
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    version = resolve_version(conn, org_slug, skill_name, spec, allow_risky=True, user_org_ids=user_org_ids)
     if version is None:
         raise HTTPException(
             status_code=404,
@@ -515,8 +580,13 @@ def get_audit_log(
     skill_name: str,
     semver: str | None = Query(None),
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> list[AuditLogResponse]:
     """Return evaluation audit log history for a skill."""
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    skill = find_skill_by_slug(conn, org_slug, skill_name, user_org_ids=user_org_ids)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
     entries = find_audit_logs(conn, org_slug, skill_name, semver=semver)
     return [
         AuditLogResponse(
@@ -545,8 +615,13 @@ def get_eval_report_by_skill(
     skill_name: str,
     semver: str = Query(..., description="Semantic version of the skill"),
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> EvalReportResponse | None:
     """Get the eval report for a specific skill version."""
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    skill = find_skill_by_slug(conn, org_slug, skill_name, user_org_ids=user_org_ids)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
     report = find_eval_report_by_skill(conn, org_slug, skill_name, semver)
     if report is None:
         return None
@@ -562,8 +637,13 @@ def get_eval_report_by_version_path(
     skill_name: str,
     semver: str,
     conn: Connection = Depends(get_connection),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> EvalReportResponse | None:
     """Get the eval report for a specific skill version (path-based)."""
+    user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
+    skill = find_skill_by_slug(conn, org_slug, skill_name, user_org_ids=user_org_ids)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
     report = find_eval_report_by_skill(conn, org_slug, skill_name, semver)
     if report is None:
         return None
@@ -776,6 +856,125 @@ def list_eval_runs(
     else:
         runs = find_active_eval_runs_for_user(conn, current_user.id)
     return [_run_to_response(r) for r in runs]
+
+
+# ---------------------------------------------------------------------------
+# Visibility and access grant endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/skills/{org_slug}/{skill_name}/visibility",
+    response_model=VisibilityResponse,
+)
+def change_visibility(
+    org_slug: str,
+    skill_name: str,
+    body: VisibilityRequest,
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> VisibilityResponse:
+    """Change the visibility of a published skill."""
+    if body.visibility not in _VALID_VISIBILITIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid visibility '{body.visibility}'. Must be 'public' or 'org'.",
+        )
+    org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
+    skill = find_skill(conn, org.id, skill_name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
+    update_skill_visibility(conn, skill.id, body.visibility)
+    logger.info("Visibility changed {}/{} -> {} by {}", org_slug, skill_name, body.visibility, current_user.username)
+    return VisibilityResponse(org_slug=org_slug, skill_name=skill_name, visibility=body.visibility)
+
+
+@router.post(
+    "/skills/{org_slug}/{skill_name}/access",
+    response_model=AccessGrantResponse,
+    status_code=201,
+)
+def grant_access(
+    org_slug: str,
+    skill_name: str,
+    body: AccessGrantRequest,
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> AccessGrantResponse:
+    """Grant an organisation access to a private skill."""
+    org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
+    skill = find_skill(conn, org.id, skill_name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
+    grantee_org = find_org_by_slug(conn, body.grantee_org_slug)
+    if grantee_org is None:
+        raise HTTPException(status_code=404, detail=f"Organisation '{body.grantee_org_slug}' not found")
+    try:
+        insert_skill_access_grant(conn, skill.id, grantee_org.id, current_user.id)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail=f"Access already granted to '{body.grantee_org_slug}'") from None
+    logger.info("Access granted {}/{} -> {} by {}", org_slug, skill_name, body.grantee_org_slug, current_user.username)
+    return AccessGrantResponse(org_slug=org_slug, skill_name=skill_name, grantee_org_slug=body.grantee_org_slug)
+
+
+@router.delete(
+    "/skills/{org_slug}/{skill_name}/access/{grantee_org_slug}",
+    response_model=AccessGrantResponse,
+)
+def revoke_access(
+    org_slug: str,
+    skill_name: str,
+    grantee_org_slug: str,
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> AccessGrantResponse:
+    """Revoke an organisation's access to a private skill."""
+    org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
+    skill = find_skill(conn, org.id, skill_name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
+    grantee_org = find_org_by_slug(conn, grantee_org_slug)
+    if grantee_org is None:
+        raise HTTPException(status_code=404, detail=f"Organisation '{grantee_org_slug}' not found")
+    deleted = delete_skill_access_grant(conn, skill.id, grantee_org.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No access grant found for '{grantee_org_slug}'")
+    logger.info("Access revoked {}/{} -> {} by {}", org_slug, skill_name, grantee_org_slug, current_user.username)
+    return AccessGrantResponse(org_slug=org_slug, skill_name=skill_name, grantee_org_slug=grantee_org_slug)
+
+
+@router.get(
+    "/skills/{org_slug}/{skill_name}/access",
+    response_model=list[AccessGrantListEntry],
+)
+def list_access(
+    org_slug: str,
+    skill_name: str,
+    conn: Connection = Depends(get_connection),
+    current_user: User = Depends(get_current_user),
+) -> list[AccessGrantListEntry]:
+    """List all access grants for a skill."""
+    org = require_org_membership(conn, org_slug, current_user.id, admin_only=True)
+    skill = find_skill(conn, org.id, skill_name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
+    grants = list_skill_access_grants(conn, skill.id)
+    results = []
+    for grant in grants:
+        grantee_org_slug_val = conn.execute(
+            sa.select(organizations_table.c.slug).where(organizations_table.c.id == grant.grantee_org_id)
+        ).scalar()
+        granted_by_username = conn.execute(
+            sa.select(users_table.c.username).where(users_table.c.id == grant.granted_by)
+        ).scalar()
+        results.append(
+            AccessGrantListEntry(
+                grantee_org_slug=grantee_org_slug_val or str(grant.grantee_org_id),
+                granted_by=granted_by_username or str(grant.granted_by),
+                created_at=grant.created_at.isoformat() if grant.created_at else None,
+            )
+        )
+    return results
 
 
 # ---------------------------------------------------------------------------
