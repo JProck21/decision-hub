@@ -215,6 +215,16 @@ make deploy-prod   # build frontend + deploy to prod Modal
 
 The deploy script builds the React frontend (`frontend/dist/`) and bundles it into the Modal container alongside the server.
 
+#### Dev auto-deploy
+
+Merging to `main` auto-deploys dev via `.github/workflows/deploy-dev.yml` — no manual step needed. The workflow uses the `dev` GitHub Environment (secrets: `DATABASE_URL`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`; variable: `MIN_CLI_VERSION_DEV`).
+
+`modal_app.py:_read_env_value()` checks `os.environ` before the local `.env` file. This is how the CI workflow passes `MIN_CLI_VERSION` without a `.env` file present. If you add new deploy-time config that the workflow needs, pass it as an env var in `deploy-dev.yml` and read it via `_read_env_value()`.
+
+#### Prod deploys are manual-only
+
+`make deploy-prod` auto-tags `prod/YYYYMMDD-HHMMSS` and pushes the tag, which triggers `release-notes.yml` to create a GitHub Release with auto-generated notes from merged PRs. To see what's in prod: `git tag --list 'prod/*' --sort=-version:refname | head -5`.
+
 ## Keeping Docs in Sync
 
 After implementing significant changes, check whether these need updating:
