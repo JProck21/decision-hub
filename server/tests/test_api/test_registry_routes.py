@@ -113,9 +113,11 @@ class TestPublishSkill:
         assert resp.status_code == 503
         assert "LLM judge" in resp.json()["detail"]
 
+    @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
+    @patch("decision_hub.api.registry_routes.update_skill_category")
     @patch("decision_hub.api.registry_routes.update_skill_description")
     @patch("decision_hub.api.registry_routes.insert_version")
     @patch("decision_hub.api.registry_routes.find_version")
@@ -134,9 +136,11 @@ class TestPublishSkill:
         mock_find_version: MagicMock,
         mock_insert_version: MagicMock,
         mock_update_desc: MagicMock,
+        mock_update_cat: MagicMock,
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -249,6 +253,7 @@ class TestPublishSkill:
         assert resp.status_code == 413
         assert "maximum size" in resp.json()["detail"]
 
+    @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -273,6 +278,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -304,11 +310,15 @@ class TestPublishSkill:
             org.id,
             "brand-new-skill",
             "A test skill",  # description extracted from SKILL.md
+            category="Other & Utilities",
         )
         assert resp.json()["skill_id"] == str(new_skill.id)
 
+    @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
+    @patch("decision_hub.api.registry_routes.update_skill_category")
+    @patch("decision_hub.api.registry_routes.update_skill_description")
     @patch("decision_hub.api.registry_routes.find_version")
     @patch("decision_hub.api.registry_routes.find_skill")
     @patch("decision_hub.api.registry_routes.compute_checksum")
@@ -321,8 +331,11 @@ class TestPublishSkill:
         mock_checksum: MagicMock,
         mock_find_skill: MagicMock,
         mock_find_version: MagicMock,
+        _mock_update_desc: MagicMock,
+        _mock_update_cat: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -477,11 +490,14 @@ class TestPublishSkill:
         assert resp.status_code == 422
         assert "Invalid skill name" in resp.json()["detail"]
 
+    @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
     @patch("decision_hub.api.registry_routes.insert_version")
     @patch("decision_hub.api.registry_routes.find_version")
+    @patch("decision_hub.api.registry_routes.update_skill_category")
+    @patch("decision_hub.api.registry_routes.update_skill_description")
     @patch("decision_hub.api.registry_routes.find_skill")
     @patch("decision_hub.api.registry_routes.upload_skill_zip")
     @patch("decision_hub.api.registry_routes.compute_checksum")
@@ -494,11 +510,14 @@ class TestPublishSkill:
         mock_checksum: MagicMock,
         mock_upload: MagicMock,
         mock_find_skill: MagicMock,
+        _mock_update_desc: MagicMock,
+        _mock_update_cat: MagicMock,
         mock_find_version: MagicMock,
         mock_insert_version: MagicMock,
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,

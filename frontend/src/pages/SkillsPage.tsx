@@ -1,23 +1,66 @@
 import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Search, Package, Download, Filter, User } from "lucide-react";
+import { Search, Package, Download, Filter, User, Tag, Layers } from "lucide-react";
 import { listSkills } from "../api/client";
 import { useApi } from "../hooks/useApi";
+import type { SkillSummary } from "../types/api";
 import NeonCard from "../components/NeonCard";
 import GradeBadge from "../components/GradeBadge";
 import LoadingSpinner from "../components/LoadingSpinner";
 import styles from "./SkillsPage.module.css";
+
+const CATEGORY_TAXONOMY: Record<string, string[]> = {
+  Development: [
+    "Backend & APIs",
+    "Frontend & UI",
+    "Mobile Development",
+    "Programming Languages",
+  ],
+  "AI & Automation": [
+    "AI & LLM",
+    "Agents & Orchestration",
+    "Prompts & Instructions",
+  ],
+  "Data & Documents": ["Data & Database", "Documents & Files"],
+  "DevOps & Security": [
+    "DevOps & Cloud",
+    "Git & Version Control",
+    "Testing & QA",
+    "Security & Auth",
+  ],
+  "Business & Productivity": [
+    "Productivity & Notes",
+    "Business & Finance",
+    "Social & Communications",
+    "Content & Writing",
+  ],
+  "Media & IoT": ["Multimedia & Audio/Video", "Smart Home & IoT"],
+  Specialized: [
+    "Data Science & Statistics",
+    "Other Science & Mathematics",
+    "Blockchain & Web3",
+    "MCP & Skills",
+    "Other & Utilities",
+  ],
+};
 
 export default function SkillsPage() {
   const { data: skills, loading, error } = useApi(() => listSkills(), []);
   const [search, setSearch] = useState("");
   const [orgFilter, setOrgFilter] = useState<string>("all");
   const [gradeFilter, setGradeFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"name" | "downloads" | "updated">("updated");
+  const [viewMode, setViewMode] = useState<"grid" | "grouped">("grid");
 
   const orgs = useMemo(() => {
     if (!skills) return [];
     return [...new Set(skills.map((s) => s.org_slug))].sort();
+  }, [skills]);
+
+  const activeCategories = useMemo(() => {
+    if (!skills) return new Set<string>();
+    return new Set(skills.map((s) => s.category).filter(Boolean));
   }, [skills]);
 
   const filtered = useMemo(() => {
@@ -44,6 +87,10 @@ export default function SkillsPage() {
       );
     }
 
+    if (categoryFilter !== "all") {
+      result = result.filter((s) => s.category === categoryFilter);
+    }
+
     if (sortBy === "name") {
       result.sort((a, b) => a.skill_name.localeCompare(b.skill_name));
     } else if (sortBy === "downloads") {
@@ -53,7 +100,17 @@ export default function SkillsPage() {
     }
 
     return result;
-  }, [skills, search, orgFilter, gradeFilter, sortBy]);
+  }, [skills, search, orgFilter, gradeFilter, categoryFilter, sortBy]);
+
+  const groupedSkills = useMemo(() => {
+    const groups: Record<string, typeof filtered> = {};
+    for (const skill of filtered) {
+      const cat = skill.category || "Uncategorized";
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(skill);
+    }
+    return groups;
+  }, [filtered]);
 
   if (loading) return <LoadingSpinner text="Loading skills..." />;
   if (error) {
@@ -118,6 +175,29 @@ export default function SkillsPage() {
           </select>
 
           <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className={styles.select}
+          >
+            <option value="all">All Categories</option>
+            {Object.entries(CATEGORY_TAXONOMY).map(([group, subcategories]) => {
+              const activeSubs = subcategories.filter((sub) =>
+                activeCategories.has(sub)
+              );
+              if (activeSubs.length === 0) return null;
+              return (
+                <optgroup key={group} label={group}>
+                  {activeSubs.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+
+          <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as "name" | "downloads" | "updated")}
             className={styles.select}
@@ -126,6 +206,14 @@ export default function SkillsPage() {
             <option value="name">Name</option>
             <option value="downloads">Downloads</option>
           </select>
+
+          <button
+            className={`${styles.viewToggle} ${viewMode === "grouped" ? styles.viewToggleActive : ""}`}
+            onClick={() => setViewMode(viewMode === "grid" ? "grouped" : "grid")}
+            title={viewMode === "grid" ? "Group by category" : "Flat grid view"}
+          >
+            <Layers size={16} />
+          </button>
         </div>
       </div>
 
@@ -135,43 +223,73 @@ export default function SkillsPage() {
           <Package size={48} />
           <p>No skills match your filters</p>
         </div>
+      ) : viewMode === "grouped" ? (
+        <div className={styles.groupedContainer}>
+          {Object.entries(groupedSkills).map(([category, categorySkills]) => (
+            <section key={category} className={styles.categorySection}>
+              <h2 className={styles.categoryHeading}>
+                <Tag size={16} />
+                {category}
+                <span className={styles.categoryCount}>{categorySkills.length}</span>
+              </h2>
+              <div className={styles.grid}>
+                {categorySkills.map((skill) => (
+                  <SkillCard key={`${skill.org_slug}/${skill.skill_name}`} skill={skill} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       ) : (
         <div className={styles.grid}>
           {filtered.map((skill) => (
-            <Link
-              key={`${skill.org_slug}/${skill.skill_name}`}
-              to={`/skills/${skill.org_slug}/${skill.skill_name}`}
-              className={styles.skillLink}
-            >
-              <NeonCard glow="cyan">
-                <div className={styles.card}>
-                  <div className={styles.cardTop}>
-                    <div className={styles.cardOrg}>
-                      <User size={12} />
-                      {skill.org_slug}
-                    </div>
-                    <GradeBadge grade={skill.safety_rating} size="sm" />
-                  </div>
-
-                  <h3 className={styles.cardName}>{skill.skill_name}</h3>
-                  <p className={styles.cardDesc}>{skill.description}</p>
-
-                  <div className={styles.cardFooter}>
-                    <span className={styles.cardVersion}>v{skill.latest_version}</span>
-                    {skill.author && (
-                      <span className={styles.cardAuthor}>by {skill.author}</span>
-                    )}
-                    <span className={styles.cardDownloads}>
-                      <Download size={12} />
-                      {skill.download_count}
-                    </span>
-                  </div>
-                </div>
-              </NeonCard>
-            </Link>
+            <SkillCard key={`${skill.org_slug}/${skill.skill_name}`} skill={skill} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+function SkillCard({ skill }: { skill: SkillSummary }) {
+  return (
+    <Link
+      to={`/skills/${skill.org_slug}/${skill.skill_name}`}
+      className={styles.skillLink}
+    >
+      <NeonCard glow="cyan">
+        <div className={styles.card}>
+          <div className={styles.cardTop}>
+            <div className={styles.cardOrg}>
+              <User size={12} />
+              {skill.org_slug}
+            </div>
+            <GradeBadge grade={skill.safety_rating} size="sm" />
+          </div>
+
+          <h3 className={styles.cardName}>{skill.skill_name}</h3>
+
+          {skill.category && (
+            <div className={styles.cardCategory}>
+              <Tag size={10} />
+              {skill.category}
+            </div>
+          )}
+
+          <p className={styles.cardDesc}>{skill.description}</p>
+
+          <div className={styles.cardFooter}>
+            <span className={styles.cardVersion}>v{skill.latest_version}</span>
+            {skill.author && (
+              <span className={styles.cardAuthor}>by {skill.author}</span>
+            )}
+            <span className={styles.cardDownloads}>
+              <Download size={12} />
+              {skill.download_count}
+            </span>
+          </div>
+        </div>
+      </NeonCard>
+    </Link>
   );
 }
