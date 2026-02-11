@@ -4,6 +4,7 @@ import { Search, Package, Download, Filter, User, Tag, Layers } from "lucide-rea
 import { listSkills } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import type { SkillSummary } from "../types/api";
+import { extractOrgs, filterSkills } from "../lib/filters";
 import NeonCard from "../components/NeonCard";
 import GradeBadge from "../components/GradeBadge";
 import LoadingSpinner from "../components/LoadingSpinner";
@@ -53,54 +54,20 @@ export default function SkillsPage() {
   const [sortBy, setSortBy] = useState<"name" | "downloads" | "updated">("updated");
   const [viewMode, setViewMode] = useState<"grid" | "grouped">("grid");
 
-  const orgs = useMemo(() => {
-    if (!skills) return [];
-    return [...new Set(skills.map((s) => s.org_slug))].sort();
-  }, [skills]);
+  const orgs = useMemo(
+    () => extractOrgs(skills ?? []),
+    [skills],
+  );
 
   const activeCategories = useMemo(() => {
     if (!skills) return new Set<string>();
     return new Set(skills.map((s) => s.category).filter(Boolean));
   }, [skills]);
 
-  const filtered = useMemo(() => {
-    if (!skills) return [];
-    let result = [...skills];
-
-    if (search) {
-      const q = search.toLowerCase();
-      result = result.filter(
-        (s) =>
-          s.skill_name.toLowerCase().includes(q) ||
-          s.description.toLowerCase().includes(q) ||
-          s.org_slug.toLowerCase().includes(q)
-      );
-    }
-
-    if (orgFilter !== "all") {
-      result = result.filter((s) => s.org_slug === orgFilter);
-    }
-
-    if (gradeFilter !== "all") {
-      result = result.filter((s) =>
-        s.safety_rating.trim().startsWith(gradeFilter)
-      );
-    }
-
-    if (categoryFilter !== "all") {
-      result = result.filter((s) => s.category === categoryFilter);
-    }
-
-    if (sortBy === "name") {
-      result.sort((a, b) => a.skill_name.localeCompare(b.skill_name));
-    } else if (sortBy === "downloads") {
-      result.sort((a, b) => b.download_count - a.download_count);
-    } else {
-      result.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    }
-
-    return result;
-  }, [skills, search, orgFilter, gradeFilter, categoryFilter, sortBy]);
+  const filtered = useMemo(
+    () => filterSkills(skills ?? [], search, orgFilter, gradeFilter, sortBy, categoryFilter),
+    [skills, search, orgFilter, gradeFilter, sortBy, categoryFilter],
+  );
 
   const groupedSkills = useMemo(() => {
     const groups: Record<string, typeof filtered> = {};
