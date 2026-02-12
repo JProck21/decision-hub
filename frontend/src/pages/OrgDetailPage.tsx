@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Package, Download, ArrowLeft, Globe, Github, ChevronLeft, ChevronRight } from "lucide-react";
 import { listSkillsFiltered, getOrgProfile } from "../api/client";
@@ -11,14 +11,14 @@ import styles from "./OrgDetailPage.module.css";
 
 const PAGE_SIZE = 24;
 
+/** Wrapper that forces a full remount when the org changes, resetting all state. */
 export default function OrgDetailPage() {
   const { orgSlug } = useParams<{ orgSlug: string }>();
-  const [page, setPage] = useState(1);
+  return <OrgDetailPageInner key={orgSlug} orgSlug={orgSlug!} />;
+}
 
-  // Reset pagination when navigating between organizations
-  useEffect(() => {
-    setPage(1);
-  }, [orgSlug]);
+function OrgDetailPageInner({ orgSlug }: { orgSlug: string }) {
+  const [page, setPage] = useState(1);
 
   const fetchSkills = useCallback(
     () => listSkillsFiltered({ org: orgSlug, sort: "updated", pageSize: PAGE_SIZE, page }),
@@ -26,7 +26,7 @@ export default function OrgDetailPage() {
   );
 
   const { data: skillsData, loading, error } = useApi(fetchSkills, [orgSlug, page]);
-  const { data: profile } = useApi(() => getOrgProfile(orgSlug!), [orgSlug]);
+  const { data: profile } = useApi(() => getOrgProfile(orgSlug), [orgSlug]);
 
   const skills = skillsData?.items ?? [];
   const totalSkills = skillsData?.total ?? 0;

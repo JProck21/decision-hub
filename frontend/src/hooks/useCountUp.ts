@@ -11,11 +11,10 @@ export function useCountUp(target: number, duration = 1500): [number, React.RefO
   const hasAnimated = useRef(false);
 
   useEffect(() => {
-    // Don't animate until we have a real value from the API
-    if (target === 0) {
-      setValue(0);
-      return;
-    }
+    // Don't set up the observer until we have a real value from the API.
+    // This prevents hasAnimated from being locked to true while target is
+    // still zero (before data loads), which would block the real animation.
+    if (target === 0) return;
 
     const el = ref.current;
     if (!el || hasAnimated.current) return;
