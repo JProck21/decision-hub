@@ -131,10 +131,10 @@ Public endpoints use in-memory per-IP sliding-window rate limiters (see `rate_li
 
 | Endpoint | Setting prefix | Default |
 |---|---|---|
-| `GET /v1/search` | `search_rate_*` | 10 req/60s |
-| `GET /v1/skills` | `list_skills_rate_*` | 30 req/60s |
-| `GET /v1/resolve/{org}/{skill}` | `resolve_rate_*` | 30 req/60s |
-| `GET /v1/skills/{org}/{skill}/download` | `download_rate_*` | 10 req/60s |
+| `GET /v1/search` | `search_rate_*` | 20 req/60s |
+| `GET /v1/skills` | `list_skills_rate_*` | 120 req/60s |
+| `GET /v1/resolve/{org}/{skill}` | `resolve_rate_*` | 60 req/60s |
+| `GET /v1/skills/{org}/{skill}/download` | `download_rate_*` | 20 req/60s |
 
 All DB queries have a 30s `statement_timeout` (set in engine `connect_args` in `database.py`). Query parameters on public endpoints have `max_length` constraints to prevent oversized payloads reaching the DB or LLM APIs.
 
