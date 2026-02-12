@@ -156,7 +156,7 @@ _METADATA_CACHE_TTL = timedelta(hours=24)
 
 
 async def sync_org_github_metadata(
-    conn: Connection,
+    engine,
     gh_token: str,
     org_slugs: list[str],
     username: str,
@@ -170,11 +170,14 @@ async def sync_org_github_metadata(
        ``/users/{username}``; otherwise fetch from ``/orgs/{slug}``.
     4. Persist via ``update_org_github_metadata``.
 
+    Uses short-lived DB transactions so the connection is not held open
+    during GitHub HTTP calls.
+
     Individual org failures are logged and skipped so the loop always
     completes.
 
     Args:
-        conn: Active database connection.
+        engine: SQLAlchemy engine (opens its own short-lived transactions).
         gh_token: GitHub OAuth access token.
         org_slugs: List of org slugs to sync.
         username: GitHub username (identifies the personal namespace).
@@ -188,7 +191,9 @@ async def sync_org_github_metadata(
 
     for slug in org_slugs:
         try:
-            org = find_org_by_slug(conn, slug)
+            # Read org in a short-lived transaction
+            with engine.begin() as conn:
+                org = find_org_by_slug(conn, slug)
             if org is None:
                 continue
 
@@ -196,19 +201,22 @@ async def sync_org_github_metadata(
             if org.github_synced_at and (now - org.github_synced_at) < _METADATA_CACHE_TTL:
                 continue
 
+            # Fetch metadata from GitHub (no DB transaction held)
             if slug == username.lower():
                 meta = await fetch_user_metadata(gh_token, username)
             else:
                 meta = await fetch_org_metadata(gh_token, slug)
 
-            update_org_github_metadata(
-                conn,
-                org.id,
-                avatar_url=meta.get("avatar_url"),
-                email=meta.get("email"),
-                description=meta.get("description"),
-                blog=meta.get("blog"),
-            )
+            # Write metadata in a short-lived transaction
+            with engine.begin() as conn:
+                update_org_github_metadata(
+                    conn,
+                    org.id,
+                    avatar_url=meta.get("avatar_url"),
+                    email=meta.get("email"),
+                    description=meta.get("description"),
+                    blog=meta.get("blog"),
+                )
         except Exception:
             logger.opt(exception=True).debug(
                 "Failed to sync GitHub metadata for org {}; skipping",

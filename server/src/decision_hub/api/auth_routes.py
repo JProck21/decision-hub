@@ -6,7 +6,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
 
-from decision_hub.api.deps import get_connection, get_settings
+from decision_hub.api.deps import get_connection, get_engine, get_settings
 from decision_hub.domain.auth import create_jwt
 from decision_hub.domain.orgs import sync_org_github_metadata, sync_user_orgs
 from decision_hub.infra.database import upsert_user
@@ -81,6 +81,7 @@ async def start_device_flow(
 async def exchange_token(
     body: TokenRequest,
     conn: Connection = Depends(get_connection),
+    engine=Depends(get_engine),
     settings: Settings = Depends(get_settings),
 ) -> TokenResponse:
     """Exchange a device_code for a JWT access token.
@@ -137,7 +138,7 @@ async def exchange_token(
     logger.debug("Synced orgs for {}: {}", username, org_slugs)
 
     try:
-        await sync_org_github_metadata(conn, gh_token, org_slugs, username)
+        await sync_org_github_metadata(engine, gh_token, org_slugs, username)
     except Exception:
         logger.opt(exception=True).warning(
             "Failed to sync GitHub metadata for {}; continuing",

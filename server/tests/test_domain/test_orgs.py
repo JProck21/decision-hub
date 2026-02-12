@@ -305,6 +305,15 @@ class FakeOrgFull:
 class TestSyncOrgGithubMetadata:
     """sync_org_github_metadata should fetch and persist GitHub metadata."""
 
+    @staticmethod
+    def _make_engine():
+        """Create a mock engine whose begin() returns a context manager."""
+        engine = MagicMock()
+        mock_conn = MagicMock()
+        engine.begin.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+        return engine, mock_conn
+
     @pytest.mark.asyncio
     @patch("decision_hub.infra.database.update_org_github_metadata")
     @patch("decision_hub.infra.github.fetch_user_metadata", new_callable=AsyncMock)
@@ -318,7 +327,7 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Personal namespace should use fetch_user_metadata."""
-        conn = MagicMock()
+        engine, mock_conn = self._make_engine()
         org_id = uuid4()
         mock_find_org.return_value = FakeOrgFull(
             id=org_id,
@@ -333,12 +342,12 @@ class TestSyncOrgGithubMetadata:
             "blog": "https://alice.dev",
         }
 
-        await sync_org_github_metadata(conn, "gh-token", ["alice"], "Alice")
+        await sync_org_github_metadata(engine, "gh-token", ["alice"], "Alice")
 
         mock_fetch_user.assert_called_once_with("gh-token", "Alice")
         mock_fetch_org.assert_not_called()
         mock_update.assert_called_once_with(
-            conn,
+            mock_conn,
             org_id,
             avatar_url="https://avatar/alice",
             email="alice@test.com",
@@ -359,7 +368,7 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Non-personal orgs should use fetch_org_metadata."""
-        conn = MagicMock()
+        engine, _ = self._make_engine()
         org_id = uuid4()
         mock_find_org.return_value = FakeOrgFull(
             id=org_id,
@@ -373,7 +382,7 @@ class TestSyncOrgGithubMetadata:
             "blog": "https://pymc.io",
         }
 
-        await sync_org_github_metadata(conn, "gh-token", ["pymc-labs"], "alice")
+        await sync_org_github_metadata(engine, "gh-token", ["pymc-labs"], "alice")
 
         mock_fetch_org.assert_called_once_with("gh-token", "pymc-labs")
         mock_fetch_user.assert_not_called()
@@ -392,7 +401,7 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Should skip orgs synced within the last 24 hours."""
-        conn = MagicMock()
+        engine, _ = self._make_engine()
         recent = datetime.now(UTC) - timedelta(hours=1)
         mock_find_org.return_value = FakeOrgFull(
             id=uuid4(),
@@ -401,7 +410,7 @@ class TestSyncOrgGithubMetadata:
             github_synced_at=recent,
         )
 
-        await sync_org_github_metadata(conn, "gh-token", ["pymc-labs"], "alice")
+        await sync_org_github_metadata(engine, "gh-token", ["pymc-labs"], "alice")
 
         mock_fetch_org.assert_not_called()
         mock_fetch_user.assert_not_called()
@@ -420,7 +429,7 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Should sync orgs that were last synced more than 24 hours ago."""
-        conn = MagicMock()
+        engine, _ = self._make_engine()
         stale = datetime.now(UTC) - timedelta(hours=25)
         mock_find_org.return_value = FakeOrgFull(
             id=uuid4(),
@@ -435,7 +444,7 @@ class TestSyncOrgGithubMetadata:
             "blog": None,
         }
 
-        await sync_org_github_metadata(conn, "gh-token", ["pymc-labs"], "alice")
+        await sync_org_github_metadata(engine, "gh-token", ["pymc-labs"], "alice")
 
         mock_fetch_org.assert_called_once()
         mock_update.assert_called_once()
@@ -453,7 +462,7 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Failure on one org should not prevent syncing others."""
-        conn = MagicMock()
+        engine, _ = self._make_engine()
         org_a_id = uuid4()
         org_b_id = uuid4()
 
@@ -478,7 +487,7 @@ class TestSyncOrgGithubMetadata:
 
         mock_fetch_org.side_effect = fetch_side
 
-        await sync_org_github_metadata(conn, "gh-token", ["org-a", "org-b"], "alice")
+        await sync_org_github_metadata(engine, "gh-token", ["org-a", "org-b"], "alice")
 
         # org-b should still be updated
         assert mock_update.call_count == 1
@@ -495,10 +504,10 @@ class TestSyncOrgGithubMetadata:
         mock_update,
     ) -> None:
         """Should skip orgs not found in the DB."""
-        conn = MagicMock()
+        engine, _ = self._make_engine()
         mock_find_org.return_value = None
 
-        await sync_org_github_metadata(conn, "gh-token", ["ghost-org"], "alice")
+        await sync_org_github_metadata(engine, "gh-token", ["ghost-org"], "alice")
 
         mock_fetch_org.assert_not_called()
         mock_update.assert_not_called()

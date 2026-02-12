@@ -20,6 +20,7 @@ from decision_hub.infra.database import (
 from decision_hub.models import User
 
 org_router = APIRouter(prefix="/v1/orgs", tags=["orgs"])
+org_public_router = APIRouter(prefix="/v1/orgs", tags=["orgs"])
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ def list_orgs(
     ]
 
 
-@org_router.get("/{slug}/profile", response_model=OrgProfile)
+@org_public_router.get("/{slug}/profile", response_model=OrgProfile)
 def get_org_profile(
     slug: str,
     conn: Connection = Depends(get_connection),
