@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Search, Package, Download, Filter, User, Tag, Layers } from "lucide-react";
+import { Search, Package, Download, Filter, User, Tag, Layers, ChevronLeft, ChevronRight } from "lucide-react";
 import { listSkills, getTaxonomy } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import type { SkillSummary } from "../types/api";
@@ -10,8 +10,11 @@ import GradeBadge from "../components/GradeBadge";
 import LoadingSpinner from "../components/LoadingSpinner";
 import styles from "./SkillsPage.module.css";
 
+const PAGE_SIZE = 12;
+
 export default function SkillsPage() {
-  const { data: skills, loading, error } = useApi(() => listSkills(), []);
+  const [page, setPage] = useState(1);
+  const { data: response, loading, error } = useApi(() => listSkills(page, PAGE_SIZE), [page]);
   const { data: taxonomy } = useApi(() => getTaxonomy(), []);
   const [search, setSearch] = useState("");
   const [orgFilter, setOrgFilter] = useState<string>("all");
@@ -20,18 +23,21 @@ export default function SkillsPage() {
   const [sortBy, setSortBy] = useState<"name" | "downloads" | "updated">("updated");
   const [viewMode, setViewMode] = useState<"grid" | "grouped">("grid");
 
+  const skills = response?.items ?? [];
+  const totalSkills = response?.total ?? 0;
+  const totalPages = response?.total_pages ?? 1;
+
   const orgs = useMemo(
-    () => extractOrgs(skills ?? []),
+    () => extractOrgs(skills),
     [skills],
   );
 
   const activeCategories = useMemo(() => {
-    if (!skills) return new Set<string>();
     return new Set(skills.map((s) => s.category).filter(Boolean));
   }, [skills]);
 
   const filtered = useMemo(
-    () => filterSkills(skills ?? [], search, orgFilter, gradeFilter, sortBy, categoryFilter),
+    () => filterSkills(skills, search, orgFilter, gradeFilter, sortBy, categoryFilter),
     [skills, search, orgFilter, gradeFilter, sortBy, categoryFilter],
   );
 
@@ -44,6 +50,13 @@ export default function SkillsPage() {
     }
     return groups;
   }, [filtered]);
+
+  // Reset to page 1 when filters change
+  const resetAndSetSearch = (v: string) => { setSearch(v); setPage(1); };
+  const resetAndSetOrg = (v: string) => { setOrgFilter(v); setPage(1); };
+  const resetAndSetGrade = (v: string) => { setGradeFilter(v); setPage(1); };
+  const resetAndSetCategory = (v: string) => { setCategoryFilter(v); setPage(1); };
+  const resetAndSetSort = (v: "name" | "downloads" | "updated") => { setSortBy(v); setPage(1); };
 
   if (loading) return <LoadingSpinner text="Loading skills..." />;
   if (error) {
@@ -64,7 +77,7 @@ export default function SkillsPage() {
           Skill Registry
         </h1>
         <p className={styles.subtitle}>
-          {skills?.length ?? 0} skills published across {orgs.length} organizations
+          {totalSkills} skills published across {orgs.length} organizations
         </p>
       </div>
 
@@ -76,7 +89,7 @@ export default function SkillsPage() {
             type="text"
             placeholder="Search skills..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => resetAndSetSearch(e.target.value)}
             className={styles.searchInput}
           />
         </div>
@@ -85,7 +98,7 @@ export default function SkillsPage() {
           <Filter size={14} />
           <select
             value={orgFilter}
-            onChange={(e) => setOrgFilter(e.target.value)}
+            onChange={(e) => resetAndSetOrg(e.target.value)}
             className={styles.select}
           >
             <option value="all">All Orgs</option>
@@ -98,7 +111,7 @@ export default function SkillsPage() {
 
           <select
             value={gradeFilter}
-            onChange={(e) => setGradeFilter(e.target.value)}
+            onChange={(e) => resetAndSetGrade(e.target.value)}
             className={styles.select}
           >
             <option value="all">All Grades</option>
@@ -109,7 +122,7 @@ export default function SkillsPage() {
 
           <select
             value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
+            onChange={(e) => resetAndSetCategory(e.target.value)}
             className={styles.select}
           >
             <option value="all">All Categories</option>
@@ -132,7 +145,7 @@ export default function SkillsPage() {
 
           <select
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as "name" | "downloads" | "updated")}
+            onChange={(e) => resetAndSetSort(e.target.value as "name" | "downloads" | "updated")}
             className={styles.select}
           >
             <option value="updated">Latest</option>
@@ -178,6 +191,31 @@ export default function SkillsPage() {
           {filtered.map((skill) => (
             <SkillCard key={`${skill.org_slug}/${skill.skill_name}`} skill={skill} />
           ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className={styles.pagination}>
+          <button
+            className={styles.pageButton}
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            <ChevronLeft size={16} />
+            Prev
+          </button>
+          <span className={styles.pageInfo}>
+            Page {page} of {totalPages}
+          </span>
+          <button
+            className={styles.pageButton}
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next
+            <ChevronRight size={16} />
+          </button>
         </div>
       )}
     </div>
