@@ -2244,10 +2244,13 @@ def claim_due_trackers(conn: Connection, *, batch_size: int = 100) -> list[Skill
     )
 
     # Select due tracker IDs with row-level locking, skipping already-locked rows.
+    # ORDER BY prioritises never-checked (NULLS FIRST) then most-overdue,
+    # which matches the ix_skill_trackers_due index.
     # LIMIT prevents unbounded lock acquisition at scale.
     locked_ids_cte = (
         sa.select(skill_trackers_table.c.id)
         .where(due_filter)
+        .order_by(skill_trackers_table.c.last_checked_at.asc().nulls_first())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
         .cte("locked_ids")
