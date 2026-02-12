@@ -1722,7 +1722,20 @@ def fetch_registry_stats(conn: Connection) -> dict:
     stmt = (
         sa.select(
             sa.func.count(sa.distinct(skills_table.c.id)).label("total_skills"),
-            sa.func.count(sa.distinct(organizations_table.c.slug)).label("total_orgs"),
+            sa.func.count(
+                sa.distinct(
+                    sa.case(
+                        (organizations_table.c.is_personal == sa.false(), organizations_table.c.slug),
+                    )
+                )
+            ).label("total_orgs"),
+            sa.func.count(
+                sa.distinct(
+                    sa.case(
+                        (organizations_table.c.is_personal == sa.true(), organizations_table.c.slug),
+                    )
+                )
+            ).label("total_publishers"),
             sa.func.coalesce(sa.func.sum(skills_table.c.download_count), 0).label("total_downloads"),
         )
         .select_from(
@@ -1759,6 +1772,7 @@ def fetch_registry_stats(conn: Connection) -> dict:
     return {
         "total_skills": row.total_skills,
         "total_orgs": row.total_orgs,
+        "total_publishers": row.total_publishers,
         "total_downloads": row.total_downloads,
         "active_categories": active_categories,
     }
