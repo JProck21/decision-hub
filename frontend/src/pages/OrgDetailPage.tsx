@@ -31,7 +31,7 @@ export default function OrgDetailPage() {
     ? profile.blog.match(/^https?:\/\//) ? profile.blog : `https://${profile.blog}`
     : null;
 
-  if (loading) return <LoadingSpinner text={`Loading ${orgSlug}...`} />;
+  if (loading && !skillsData) return <LoadingSpinner text={`Loading ${orgSlug}...`} />;
   if (error) {
     return (
       <div className="container">

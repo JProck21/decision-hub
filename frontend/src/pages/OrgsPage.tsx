@@ -59,7 +59,7 @@ export default function OrgsPage() {
           Organizations
         </h1>
         <p className={styles.subtitle}>
-          {orgs.length} organizations with published skills
+          {orgs.length} organizations found
         </p>
       </div>
 

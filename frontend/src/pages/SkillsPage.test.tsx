@@ -56,6 +56,13 @@ const TAXONOMY = {
 
 const ORG_PROFILES = [{ slug: "acme", is_personal: false, avatar_url: null, description: null, blog: null }];
 
+const STATS = {
+  total_skills: 3,
+  total_orgs: 1,
+  total_downloads: 170,
+  active_categories: ["Backend & APIs", "AI & LLM", "Frontend & UI"],
+};
+
 /** Server-side filtering mock: filters SKILLS based on query params. */
 function filterSkillsHandler({ request }: { request: Request }) {
   const url = new URL(request.url);
@@ -88,6 +95,7 @@ const server = setupServer(
   http.get("/v1/skills", filterSkillsHandler),
   http.get("/v1/taxonomy", () => HttpResponse.json(TAXONOMY)),
   http.get("/v1/orgs/profiles", () => HttpResponse.json(ORG_PROFILES)),
+  http.get("/v1/stats", () => HttpResponse.json(STATS)),
 );
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

@@ -113,7 +113,7 @@ describe("getSkill", () => {
 
 describe("getRegistryStats", () => {
   it("returns registry statistics", async () => {
-    const stats = { total_skills: 100, total_orgs: 10, total_downloads: 5000 };
+    const stats = { total_skills: 100, total_orgs: 10, total_downloads: 5000, active_categories: ["Code Generation"] };
     server.use(
       http.get("/v1/stats", () => HttpResponse.json(stats)),
     );

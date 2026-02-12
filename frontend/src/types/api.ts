@@ -94,6 +94,7 @@ export interface RegistryStats {
   total_skills: number;
   total_orgs: number;
   total_downloads: number;
+  active_categories: string[];
 }
 
 export interface OrgStatsEntry {

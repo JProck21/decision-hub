@@ -1589,10 +1589,27 @@ def fetch_registry_stats(conn: Connection) -> dict:
     )
 
     row = conn.execute(stmt).one()
+
+    # Active categories: distinct non-null categories across published skills
+    cat_stmt = (
+        sa.select(sa.distinct(skills_table.c.category))
+        .where(
+            sa.and_(
+                skills_table.c.category.isnot(None),
+                skills_table.c.category != "",
+                skills_table.c.visibility == "public",
+                sa.exists().where(versions_table.c.skill_id == skills_table.c.id),
+            )
+        )
+        .order_by(skills_table.c.category)
+    )
+    active_categories = [r[0] for r in conn.execute(cat_stmt)]
+
     return {
         "total_skills": row.total_skills,
         "total_orgs": row.total_orgs,
         "total_downloads": row.total_downloads,
+        "active_categories": active_categories,
     }
 
 

@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { Search, Package, Download, Filter, User, Tag, Layers, ChevronLeft, ChevronRight } from "lucide-react";
-import { listSkillsFiltered, getTaxonomy, listOrgProfiles } from "../api/client";
+import { listSkillsFiltered, getTaxonomy, listOrgProfiles, getRegistryStats } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import type { SkillSummary, PaginatedSkillsResponse } from "../types/api";
 import NeonCard from "../components/NeonCard";
@@ -24,6 +24,11 @@ export default function SkillsPage() {
 
   const { data: taxonomy } = useApi(() => getTaxonomy(), []);
   const { data: orgProfiles } = useApi(() => listOrgProfiles(), []);
+  const { data: stats } = useApi(() => getRegistryStats(), []);
+  const activeCategories = useMemo(
+    () => new Set(stats?.active_categories ?? []),
+    [stats],
+  );
 
   // Debounce the search input
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -146,15 +151,19 @@ export default function SkillsPage() {
             className={styles.select}
           >
             <option value="all">All Categories</option>
-            {Object.entries(taxonomy?.groups ?? {}).map(([group, subcategories]) => (
-              <optgroup key={group} label={group}>
-                {subcategories.map((sub) => (
-                  <option key={sub} value={sub}>
-                    {sub}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
+            {Object.entries(taxonomy?.groups ?? {}).map(([group, subcategories]) => {
+              const activeSubs = subcategories.filter((sub) => activeCategories.has(sub));
+              if (activeSubs.length === 0) return null;
+              return (
+                <optgroup key={group} label={group}>
+                  {activeSubs.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
           </select>
 
           <select
