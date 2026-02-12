@@ -114,6 +114,7 @@ class TestPublishSkill:
         assert "LLM judge" in resp.json()["detail"]
 
     @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -140,6 +141,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
@@ -254,6 +256,7 @@ class TestPublishSkill:
         assert "maximum size" in resp.json()["detail"]
 
     @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -278,6 +281,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
@@ -316,6 +320,7 @@ class TestPublishSkill:
         assert resp.json()["skill_id"] == str(new_skill.id)
 
     @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.update_skill_category")
@@ -336,6 +341,7 @@ class TestPublishSkill:
         _mock_update_cat: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
@@ -359,6 +365,7 @@ class TestPublishSkill:
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
 
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_service.insert_audit_log")
@@ -373,6 +380,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -395,6 +403,7 @@ class TestPublishSkill:
         assert resp.status_code == 422
         assert "malformed" in resp.json()["detail"].lower()
 
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_service.insert_audit_log")
@@ -409,6 +418,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -492,6 +502,7 @@ class TestPublishSkill:
         assert "Invalid skill name" in resp.json()["detail"]
 
     @patch("decision_hub.api.registry_routes.classify_skill_category", return_value="Other & Utilities")
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -518,6 +529,7 @@ class TestPublishSkill:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         _mock_classify: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
@@ -1365,6 +1377,7 @@ class TestDownloadSkillVisibility:
 class TestPublishVisibilityPreservation:
     """POST /v1/publish -- visibility is preserved when not explicitly provided."""
 
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -1391,6 +1404,7 @@ class TestPublishVisibilityPreservation:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,
@@ -1425,6 +1439,7 @@ class TestPublishVisibilityPreservation:
         # update_skill_visibility should NOT have been called
         mock_update_vis.assert_not_called()
 
+    @patch("decision_hub.api.registry_service._build_review_body_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_prompt_fn", return_value=None)
     @patch("decision_hub.api.registry_service._build_analyze_fn", return_value=None)
     @patch("decision_hub.api.registry_routes.insert_audit_log")
@@ -1451,6 +1466,7 @@ class TestPublishVisibilityPreservation:
         mock_insert_audit: MagicMock,
         _mock_analyze_fn: MagicMock,
         _mock_prompt_fn: MagicMock,
+        _mock_review_body: MagicMock,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_user_id: UUID,

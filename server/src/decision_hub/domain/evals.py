@@ -71,6 +71,10 @@ def run_eval_pipeline(
     skill_name: str,
     runtime=None,
     judge_api_key: str = "",
+    *,
+    sandbox_memory_mb: int = 4096,
+    sandbox_timeout_seconds: int = 900,
+    sandbox_cpu: float = 2.0,
 ) -> tuple[list[dict], int, int, int]:
     """Execute eval cases in Modal sandbox and judge outputs.
 
@@ -119,6 +123,9 @@ def run_eval_pipeline(
                 agent_env_vars=agent_env_vars,
                 org_slug=org_slug,
                 skill_name=skill_name,
+                sandbox_memory_mb=sandbox_memory_mb,
+                sandbox_timeout_seconds=sandbox_timeout_seconds,
+                sandbox_cpu=sandbox_cpu,
             )
         except Exception as e:
             logger.error("Sandbox error for case '{}': {}", case.name, e)
@@ -127,7 +134,7 @@ def run_eval_pipeline(
                     "name": case.name,
                     "description": case.description,
                     "verdict": "error",
-                    "reasoning": f"Sandbox error: {e}",
+                    "reasoning": _redact_secrets(f"Sandbox error: {e}"),
                     "agent_output": "",
                     "agent_stderr": "",
                     "exit_code": -1,
@@ -149,9 +156,9 @@ def run_eval_pipeline(
                     "name": case.name,
                     "description": case.description,
                     "verdict": "error",
-                    "reasoning": f"Agent exited with code {exit_code}: {stderr}",
-                    "agent_output": stdout,
-                    "agent_stderr": stderr,
+                    "reasoning": _redact_secrets(f"Agent exited with code {exit_code}: {stderr}"),
+                    "agent_output": _redact_secrets(stdout),
+                    "agent_stderr": _redact_secrets(stderr),
                     "exit_code": exit_code,
                     "duration_ms": duration_ms,
                     "stage": "agent",
@@ -186,9 +193,9 @@ def run_eval_pipeline(
                 "name": case.name,
                 "description": case.description,
                 "verdict": verdict,
-                "reasoning": reasoning,
-                "agent_output": stdout,
-                "agent_stderr": stderr,
+                "reasoning": _redact_secrets(reasoning),
+                "agent_output": _redact_secrets(stdout),
+                "agent_stderr": _redact_secrets(stderr),
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "stage": stage,
@@ -211,6 +218,10 @@ def stream_eval_pipeline(
     org_slug: str,
     skill_name: str,
     judge_api_key: str = "",
+    *,
+    sandbox_memory_mb: int = 4096,
+    sandbox_timeout_seconds: int = 900,
+    sandbox_cpu: float = 2.0,
 ) -> Generator[dict, None, None]:
     """Generator that yields structured events for the entire pipeline.
 
@@ -254,6 +265,9 @@ def stream_eval_pipeline(
                 agent_env_vars=agent_env_vars,
                 org_slug=org_slug,
                 skill_name=skill_name,
+                sandbox_memory_mb=sandbox_memory_mb,
+                sandbox_timeout_seconds=sandbox_timeout_seconds,
+                sandbox_cpu=sandbox_cpu,
             )
             # Consume streaming output events
             try:
@@ -277,7 +291,7 @@ def stream_eval_pipeline(
                     "name": case.name,
                     "description": case.description,
                     "verdict": "error",
-                    "reasoning": f"Sandbox error: {e}",
+                    "reasoning": _redact_secrets(f"Sandbox error: {e}"),
                     "agent_output": "",
                     "agent_stderr": "",
                     "exit_code": -1,
@@ -292,7 +306,7 @@ def stream_eval_pipeline(
                 case_index=case_idx,
                 case_name=case.name,
                 verdict="error",
-                reasoning=f"Sandbox error: {e}",
+                reasoning=_redact_secrets(f"Sandbox error: {e}"),
                 duration_ms=0,
             )
             continue
@@ -301,15 +315,15 @@ def stream_eval_pipeline(
 
         # Stage 2: Check exit code
         if exit_code != 0:
-            reasoning = f"Agent exited with code {exit_code}: {stderr[:500]}"
+            reasoning = _redact_secrets(f"Agent exited with code {exit_code}: {stderr[:500]}")
             case_results.append(
                 {
                     "name": case.name,
                     "description": case.description,
                     "verdict": "error",
                     "reasoning": reasoning,
-                    "agent_output": stdout,
-                    "agent_stderr": stderr,
+                    "agent_output": _redact_secrets(stdout),
+                    "agent_stderr": _redact_secrets(stderr),
                     "exit_code": exit_code,
                     "duration_ms": duration_ms,
                     "stage": "agent",
@@ -355,9 +369,9 @@ def stream_eval_pipeline(
                 "name": case.name,
                 "description": case.description,
                 "verdict": verdict,
-                "reasoning": reasoning,
-                "agent_output": stdout,
-                "agent_stderr": stderr,
+                "reasoning": _redact_secrets(reasoning),
+                "agent_output": _redact_secrets(stdout),
+                "agent_stderr": _redact_secrets(stderr),
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "stage": stage,
@@ -371,7 +385,7 @@ def stream_eval_pipeline(
             case_index=case_idx,
             case_name=case.name,
             verdict=verdict,
-            reasoning=reasoning,
+            reasoning=_redact_secrets(reasoning),
             duration_ms=duration_ms,
         )
 
@@ -405,6 +419,10 @@ def run_streaming_eval(
     s3_client,
     s3_bucket: str,
     log_s3_prefix: str,
+    *,
+    sandbox_memory_mb: int = 4096,
+    sandbox_timeout_seconds: int = 900,
+    sandbox_cpu: float = 2.0,
 ) -> None:
     """Consume the streaming pipeline, persist events to S3, and update DB.
 
@@ -459,6 +477,9 @@ def run_streaming_eval(
             org_slug=org_slug,
             skill_name=skill_name,
             judge_api_key=judge_api_key,
+            sandbox_memory_mb=sandbox_memory_mb,
+            sandbox_timeout_seconds=sandbox_timeout_seconds,
+            sandbox_cpu=sandbox_cpu,
         )
 
         for event in pipeline:
