@@ -71,6 +71,7 @@ from decision_hub.infra.database import (
 from decision_hub.infra.database import (
     delete_skill as delete_skill_record,
 )
+from decision_hub.infra.embeddings import generate_and_store_skill_embedding
 from decision_hub.infra.storage import (
     compute_checksum,
     delete_skill_zip,
@@ -443,6 +444,9 @@ def publish_skill(
             status_code=409,
             detail=f"Version {version} already exists for {org_slug}/{skill_name}",
         )
+
+    # Generate embedding (fail-open: never blocks publish)
+    generate_and_store_skill_embedding(conn, skill.id, skill_name, org_slug, category, description, settings)
 
     # Upload to S3 and record the version
     s3_key = build_s3_key(org_slug, skill_name, version)

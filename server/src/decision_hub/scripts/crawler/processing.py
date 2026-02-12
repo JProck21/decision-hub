@@ -321,6 +321,11 @@ def _publish_one_skill(
         return
 
     # Grade A/B/C — publish
+    # Generate embedding only for approved skills (fail-open: never blocks publish)
+    from decision_hub.infra.embeddings import generate_and_store_skill_embedding
+
+    generate_and_store_skill_embedding(conn, skill.id, name, org.slug, "", description, settings)
+
     s3_key = build_s3_key(org.slug, name, version)
     upload_skill_zip(s3_client, settings.s3_bucket, s3_key, zip_data)
     version_record = insert_version(
