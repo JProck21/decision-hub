@@ -498,7 +498,7 @@ def create_engine(database_url: str) -> Engine:
     return sa.create_engine(
         database_url,
         poolclass=NullPool,
-        connect_args={"options": "-c statement_cache_size=0"},
+        connect_args={"options": "-c statement_cache_size=0 -c statement_timeout=30000"},
     )
 
 

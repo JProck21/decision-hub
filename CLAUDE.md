@@ -98,6 +98,21 @@ logger.info("Publishing {}/{} version={}", org_slug, skill_name, version_id)
 
 **Include greppable identifiers** (org, skill, case name, status code) — not just human prose.
 
+### Rate Limiting & DOS Protection
+
+Public endpoints use in-memory per-IP sliding-window rate limiters (see `rate_limit.py`). Limiters are lazily initialized on `app.state` from settings. Limits are per-container (not shared across Modal replicas).
+
+| Endpoint | Setting prefix | Default |
+|---|---|---|
+| `GET /v1/search` | `search_rate_*` | 10 req/60s |
+| `GET /v1/skills` | `list_skills_rate_*` | 30 req/60s |
+| `GET /v1/resolve/{org}/{skill}` | `resolve_rate_*` | 30 req/60s |
+| `GET /v1/skills/{org}/{skill}/download` | `download_rate_*` | 10 req/60s |
+
+All DB queries have a 30s `statement_timeout` (set in engine `connect_args` in `database.py`). Query parameters on public endpoints have `max_length` constraints to prevent oversized payloads reaching the DB or LLM APIs.
+
+When adding new public endpoints, always add a rate limiter following the existing pattern: define a `_enforce_*_rate_limit` dependency, add settings in `settings.py`, and wire it via `dependencies=[Depends(...)]`.
+
 ## Quality Gates
 
 ### Linting & Formatting

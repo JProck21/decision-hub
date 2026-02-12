@@ -44,8 +44,8 @@ class SearchResponse(BaseModel):
     dependencies=[Depends(_enforce_search_rate_limit)],
 )
 def search_skills(
-    q: str,
-    category: str | None = Query(None, description="Filter results to a specific category"),
+    q: str = Query(..., max_length=500),
+    category: str | None = Query(None, max_length=100, description="Filter results to a specific category"),
     settings: Settings = Depends(get_settings),
     conn=Depends(get_connection),
     s3_client=Depends(get_s3_client),

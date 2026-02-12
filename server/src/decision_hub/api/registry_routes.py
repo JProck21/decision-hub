@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.engine import Connection
@@ -19,6 +19,7 @@ from decision_hub.api.deps import (
     get_s3_client,
     get_settings,
 )
+from decision_hub.api.rate_limit import RateLimiter
 from decision_hub.api.registry_service import (
     classify_skill_category,
     maybe_trigger_agent_assessment,
@@ -85,6 +86,43 @@ from decision_hub.settings import Settings
 
 router = APIRouter(prefix="/v1", tags=["registry"])
 public_router = APIRouter(prefix="/v1", tags=["registry"])
+
+
+def _enforce_list_skills_rate_limit(request: Request) -> None:
+    """Rate-limit the skills list endpoint."""
+    state = request.app.state
+    if not hasattr(state, "_list_skills_rate_limiter"):
+        settings: Settings = state.settings
+        state._list_skills_rate_limiter = RateLimiter(
+            max_requests=settings.list_skills_rate_limit,
+            window_seconds=settings.list_skills_rate_window,
+        )
+    state._list_skills_rate_limiter(request)
+
+
+def _enforce_resolve_rate_limit(request: Request) -> None:
+    """Rate-limit the resolve endpoint."""
+    state = request.app.state
+    if not hasattr(state, "_resolve_rate_limiter"):
+        settings: Settings = state.settings
+        state._resolve_rate_limiter = RateLimiter(
+            max_requests=settings.resolve_rate_limit,
+            window_seconds=settings.resolve_rate_window,
+        )
+    state._resolve_rate_limiter(request)
+
+
+def _enforce_download_rate_limit(request: Request) -> None:
+    """Rate-limit the download endpoint."""
+    state = request.app.state
+    if not hasattr(state, "_download_rate_limiter"):
+        settings: Settings = state.settings
+        state._download_rate_limiter = RateLimiter(
+            max_requests=settings.download_rate_limit,
+            window_seconds=settings.download_rate_window,
+        )
+    state._download_rate_limiter(request)
+
 
 _VALID_VISIBILITIES = {"public", "org"}
 
@@ -473,7 +511,11 @@ def publish_skill(
     )
 
 
-@public_router.get("/skills", response_model=PaginatedSkillsResponse)
+@public_router.get(
+    "/skills",
+    response_model=PaginatedSkillsResponse,
+    dependencies=[Depends(_enforce_list_skills_rate_limit)],
+)
 def list_skills(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -534,11 +576,15 @@ def get_latest_version(
     return LatestVersionResponse(version=version.semver, checksum=version.checksum)
 
 
-@public_router.get("/resolve/{org_slug}/{skill_name}", response_model=ResolveResponse)
+@public_router.get(
+    "/resolve/{org_slug}/{skill_name}",
+    response_model=ResolveResponse,
+    dependencies=[Depends(_enforce_resolve_rate_limit)],
+)
 def resolve_skill(
     org_slug: str,
     skill_name: str,
-    spec: str = "latest",
+    spec: str = Query("latest", max_length=50),
     allow_risky: bool = Query(False),
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
@@ -577,11 +623,14 @@ def resolve_skill(
     )
 
 
-@public_router.get("/skills/{org_slug}/{skill_name}/download")
+@public_router.get(
+    "/skills/{org_slug}/{skill_name}/download",
+    dependencies=[Depends(_enforce_download_rate_limit)],
+)
 def download_skill(
     org_slug: str,
     skill_name: str,
-    spec: str = "latest",
+    spec: str = Query("latest", max_length=50),
     conn: Connection = Depends(get_connection),
     s3_client=Depends(get_s3_client),
     settings: Settings = Depends(get_settings),
@@ -614,7 +663,7 @@ def download_skill(
 def get_audit_log(
     org_slug: str,
     skill_name: str,
-    semver: str | None = Query(None),
+    semver: str | None = Query(None, max_length=50),
     conn: Connection = Depends(get_connection),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> list[AuditLogResponse]:
@@ -649,7 +698,7 @@ def get_audit_log(
 def get_eval_report_by_skill(
     org_slug: str,
     skill_name: str,
-    semver: str = Query(..., description="Semantic version of the skill"),
+    semver: str = Query(..., max_length=50, description="Semantic version of the skill"),
     conn: Connection = Depends(get_connection),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> EvalReportResponse | None:

@@ -32,6 +32,15 @@ def test_settings() -> MagicMock:
     settings.require_github_org = ""
     settings.required_github_orgs = []
     settings.min_cli_version = ""
+    # Rate limiting
+    settings.search_rate_limit = 10
+    settings.search_rate_window = 60
+    settings.list_skills_rate_limit = 30
+    settings.list_skills_rate_window = 60
+    settings.resolve_rate_limit = 30
+    settings.resolve_rate_window = 60
+    settings.download_rate_limit = 10
+    settings.download_rate_window = 60
     return settings
 
 
