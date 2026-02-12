@@ -88,10 +88,12 @@ def discover_batches(
     strategies: list[str],
     stats: CrawlStats,
 ) -> Generator[dict[str, DiscoveredRepo], None, None]:
-    """Yield a batch of newly-discovered repos after each strategy completes.
+    """Yield small batches of newly-discovered repos as they are found.
 
-    Each batch contains only repos not seen in previous batches, so the caller
-    can start processing immediately without waiting for all strategies.
+    Each strategy is a generator that yields sub-batches (e.g. one per size
+    range, one per topic). This function deduplicates across batches and yields
+    immediately so the caller can start processing without waiting for an
+    entire strategy to complete.
     """
     from decision_hub.scripts.crawler.discovery import (
         GitHubClient,
@@ -100,11 +102,31 @@ def discover_batches(
         search_by_file_size,
         search_by_path,
         search_by_topic,
+        search_trusted_orgs,
+        tag_trusted_repos,
     )
 
     gh = GitHubClient(github_token)
     seen: set[str] = set()
     all_repos: dict[str, DiscoveredRepo] = {}
+
+    def _yield_sub_batches(
+        sub_batches: Generator[dict[str, DiscoveredRepo], None, None],
+    ) -> Generator[dict[str, DiscoveredRepo], None, None]:
+        for found in sub_batches:
+            all_repos.update(found)
+            new_batch = {k: v for k, v in found.items() if k not in seen}
+            seen.update(new_batch.keys())
+            if new_batch:
+                tag_trusted_repos(new_batch)
+                trusted_count = sum(1 for r in new_batch.values() if r.is_trusted)
+                logger.info(
+                    "Discovered {} new repos ({} trusted, {} total so far)",
+                    len(new_batch),
+                    trusted_count,
+                    len(all_repos),
+                )
+                yield new_batch
 
     # Fork scanning runs last because it depends on discovered repos
     ordered = [s for s in strategies if s != "fork"]
@@ -112,43 +134,32 @@ def discover_batches(
         ordered.append("fork")
 
     try:
+        # Always search trusted orgs first — fast, high-value repos
+        logger.info("Discovery strategy: Trusted organizations")
+        yield from _yield_sub_batches(search_trusted_orgs(gh, stats))
+
         for name in ordered:
             logger.info("Discovery strategy: {}", _STRATEGY_LABELS.get(name, name))
 
             if name == "size":
-                found = search_by_file_size(gh, stats)
+                sub_batches = search_by_file_size(gh, stats)
             elif name == "path":
-                found = search_by_path(gh, stats)
+                sub_batches = search_by_path(gh, stats)
             elif name == "topic":
-                found = search_by_topic(gh, stats)
+                sub_batches = search_by_topic(gh, stats)
             elif name == "curated":
-                found = parse_curated_lists(gh, stats)
+                sub_batches = parse_curated_lists(gh, stats)
             elif name == "fork":
                 top_repos = sorted(
                     all_repos.values(),
                     key=lambda r: r.stars,
                     reverse=True,
                 )[:10]
-                found = scan_forks(gh, [r.full_name for r in top_repos], stats)
+                sub_batches = scan_forks(gh, [r.full_name for r in top_repos], stats)
             else:
-                found = {}
+                continue
 
-            all_repos.update(found)
-
-            # Yield only repos we haven't yielded before
-            new_batch = {k: v for k, v in found.items() if k not in seen}
-            seen.update(new_batch.keys())
-
-            if new_batch:
-                logger.info(
-                    "Strategy '{}' found {} new repos ({} total)",
-                    name,
-                    len(new_batch),
-                    len(all_repos),
-                )
-                yield new_batch
-            else:
-                logger.info("Strategy '{}' found 0 new repos", name)
+            yield from _yield_sub_batches(sub_batches)
     finally:
         gh.close()
 
@@ -162,46 +173,70 @@ def _filter_changed_repos(
 ) -> list[DiscoveredRepo]:
     """Filter out repos whose HEAD SHA matches the checkpoint (unchanged).
 
-    Uses the GitHub API to fetch current HEAD SHA for each previously-processed
-    repo. Repos not in the checkpoint are always included.
+    Uses concurrent GitHub API calls to check HEAD SHA for previously-processed
+    repos. Repos not in the checkpoint are always included.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from rich.progress import Progress, SpinnerColumn, TextColumn
 
     from decision_hub.domain.tracker import fetch_latest_commit_sha
 
-    changed: list[DiscoveredRepo] = []
-    skipped = 0
+    # Split into new repos (no SHA check needed) and known repos (need check)
+    new_repos: list[DiscoveredRepo] = []
+    needs_check: list[DiscoveredRepo] = []
+    for repo in repos:
+        if checkpoint.get_last_sha(repo.full_name) is None:
+            new_repos.append(repo)
+        else:
+            needs_check.append(repo)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TextColumn("{task.completed}/{task.total}"),
-    ) as progress:
-        task = progress.add_task("Checking for repo changes...", total=len(repos))
+    if not needs_check:
+        changed = new_repos
+    else:
+        changed = list(new_repos)
 
-        for repo in repos:
+        def _check_sha(repo: DiscoveredRepo) -> tuple[DiscoveredRepo, bool]:
+            """Return (repo, has_changed)."""
             last_sha = checkpoint.get_last_sha(repo.full_name)
-            if last_sha is not None:
-                # Previously processed — check if HEAD changed
-                parts = repo.full_name.split("/", 1)
-                if len(parts) == 2:
-                    try:
-                        current_sha = fetch_latest_commit_sha(parts[0], parts[1], "HEAD", github_token)
-                        if current_sha == last_sha:
-                            skipped += 1
-                            progress.advance(task)
-                            continue
-                    except Exception:
-                        # If we can't check, process it anyway
-                        pass
-            changed.append(repo)
-            progress.advance(task)
+            parts = repo.full_name.split("/", 1)
+            if len(parts) == 2:
+                try:
+                    current = fetch_latest_commit_sha(parts[0], parts[1], "HEAD", github_token)
+                    if current == last_sha:
+                        return repo, False
+                except Exception:
+                    pass
+            return repo, True
 
-    if skipped:
-        logger.info("{} repos unchanged since last crawl, skipping", skipped)
-    # Process most-starred repos first so popular skills are indexed sooner
-    changed.sort(key=lambda r: r.stars, reverse=True)
+        with (
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                TextColumn("{task.completed}/{task.total}"),
+            ) as progress,
+            ThreadPoolExecutor(max_workers=10) as pool,
+        ):
+            task = progress.add_task("Checking for repo changes...", total=len(needs_check))
+            futures = {pool.submit(_check_sha, r): r for r in needs_check}
+            skipped = 0
+            for future in as_completed(futures):
+                repo, has_changed = future.result()
+                if has_changed:
+                    changed.append(repo)
+                else:
+                    skipped += 1
+                progress.advance(task)
+
+            if skipped:
+                logger.info("{} repos unchanged since last crawl, skipping", skipped)
+
+    # Trusted orgs first, then by stars within each group
+    changed.sort(key=lambda r: (r.is_trusted, r.stars), reverse=True)
     return changed
+
+
+PROCESSING_CHUNK_SIZE = 30
 
 
 def run_processing_phase(
@@ -214,7 +249,11 @@ def run_processing_phase(
     modal_app_name: str,
     stats: CrawlStats,
 ) -> bool:
-    """Fan out repo processing to Modal containers.
+    """Fan out repo processing to Modal containers in small chunks.
+
+    Processes repos in chunks of PROCESSING_CHUNK_SIZE so we can stop early
+    when the max_skills cap is reached without wasting Modal compute on
+    hundreds of repos that won't be needed.
 
     Returns True if max_skills cap was reached (caller should stop).
     """
@@ -222,7 +261,6 @@ def run_processing_phase(
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
     fn = modal.Function.from_name(modal_app_name, "crawl_process_repo")
-    repo_dicts = [repo_to_dict(r) for r in pending_repos]
 
     with Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -234,36 +272,40 @@ def run_processing_phase(
     ) as progress:
         task = progress.add_task(
             "Processing repos",
-            total=len(repo_dicts),
+            total=len(pending_repos),
             pub=stats.skills_published,
             fail=stats.skills_failed,
             skip=stats.skills_skipped,
             quar=stats.skills_quarantined,
         )
 
-        for result in fn.map(
-            repo_dicts,
-            kwargs={"bot_user_id": bot_user_id, "github_token": github_token},
-            return_exceptions=True,
-        ):
-            if isinstance(result, Exception):
-                stats.errors.append(str(result)[:500])
-                repo_name = "unknown"
-                commit_sha = None
-            else:
-                stats.accumulate(result)
-                repo_name = result.get("repo", "unknown")
-                commit_sha = result.get("commit_sha")
+        for chunk_start in range(0, len(pending_repos), PROCESSING_CHUNK_SIZE):
+            chunk = pending_repos[chunk_start : chunk_start + PROCESSING_CHUNK_SIZE]
+            chunk_dicts = [repo_to_dict(r) for r in chunk]
 
-            checkpoint.mark_processed(repo_name, checkpoint_path, commit_sha=commit_sha)
-            progress.update(
-                task,
-                advance=1,
-                pub=stats.skills_published,
-                fail=stats.skills_failed,
-                skip=stats.skills_skipped,
-                quar=stats.skills_quarantined,
-            )
+            for result in fn.map(
+                chunk_dicts,
+                kwargs={"bot_user_id": bot_user_id, "github_token": github_token},
+                return_exceptions=True,
+            ):
+                if isinstance(result, Exception):
+                    stats.errors.append(str(result)[:500])
+                    repo_name = "unknown"
+                    commit_sha = None
+                else:
+                    stats.accumulate(result)
+                    repo_name = result.get("repo", "unknown")
+                    commit_sha = result.get("commit_sha")
+
+                checkpoint.mark_processed(repo_name, checkpoint_path, commit_sha=commit_sha)
+                progress.update(
+                    task,
+                    advance=1,
+                    pub=stats.skills_published,
+                    fail=stats.skills_failed,
+                    skip=stats.skills_skipped,
+                    quar=stats.skills_quarantined,
+                )
 
             if max_skills is not None and stats.skills_published >= max_skills:
                 logger.info("Reached --max-skills cap ({}), stopping", max_skills)
