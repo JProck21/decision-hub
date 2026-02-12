@@ -6,6 +6,7 @@ run gauntlet, publish or quarantine. No shared state between containers.
 
 import re
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -29,14 +30,19 @@ CLONE_TIMEOUT_SECONDS = 120
 BOT_GITHUB_ID = "0"
 BOT_USERNAME = "dhub-crawler"
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
+_METADATA_CACHE_TTL = timedelta(hours=24)
 
 
-def fetch_owner_email(
+def fetch_owner_metadata(
     login: str,
     owner_type: str,
     token: str | None = None,
-) -> str | None:
-    """Fetch public email for a GitHub user/org. Works inside Modal containers."""
+) -> dict:
+    """Fetch public metadata for a GitHub user/org. Works inside Modal containers.
+
+    Returns a dict with keys: avatar_url, email, description, blog.
+    On error returns an empty dict.
+    """
     headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -48,11 +54,18 @@ def fetch_owner_email(
     try:
         resp = httpx.get(endpoint, headers=headers, timeout=15)
         if resp.status_code == 200:
-            email = resp.json().get("email")
-            return email if email else None
+            data = resp.json()
+            # GitHub users have "bio" instead of "description"
+            description = data.get("description") if owner_type == "Organization" else data.get("bio")
+            return {
+                "avatar_url": data.get("avatar_url") or None,
+                "email": data.get("email") or None,
+                "description": description or None,
+                "blog": data.get("blog") or None,
+            }
     except httpx.HTTPError:
-        return None
-    return None
+        return {}
+    return {}
 
 
 def process_repo_on_modal(
@@ -73,7 +86,7 @@ def process_repo_on_modal(
         find_org_member,
         insert_org_member,
         insert_organization,
-        update_org_email,
+        update_org_github_metadata,
         upsert_user,
     )
     from decision_hub.infra.storage import (
@@ -90,7 +103,7 @@ def process_repo_on_modal(
         "skills_failed": 0,
         "skills_quarantined": 0,
         "org_created": False,
-        "email_saved": False,
+        "metadata_synced": False,
         "error": None,
     }
 
@@ -111,13 +124,6 @@ def process_repo_on_modal(
 
         bot_user_id = UUID(bot_user_id_str)
 
-        # Fetch owner email
-        email = fetch_owner_email(
-            repo_dict["owner_login"],
-            repo_dict["owner_type"],
-            github_token,
-        )
-
         with engine.connect() as conn:
             # Ensure bot user exists
             upsert_user(conn, github_id=BOT_GITHUB_ID, username=BOT_USERNAME)
@@ -133,9 +139,26 @@ def process_repo_on_modal(
                 if existing is None:
                     insert_org_member(conn, org.id, bot_user_id, "admin")
 
-            if email and not org.email:
-                update_org_email(conn, org.id, email)
-                result["email_saved"] = True
+            # Sync GitHub metadata if never synced or stale (>24h)
+            needs_sync = (
+                org.github_synced_at is None or (datetime.now(UTC) - org.github_synced_at) > _METADATA_CACHE_TTL
+            )
+            if needs_sync:
+                meta = fetch_owner_metadata(
+                    repo_dict["owner_login"],
+                    repo_dict["owner_type"],
+                    github_token,
+                )
+                if meta:
+                    update_org_github_metadata(
+                        conn,
+                        org.id,
+                        avatar_url=meta.get("avatar_url"),
+                        email=meta.get("email"),
+                        description=meta.get("description"),
+                        blog=meta.get("blog"),
+                    )
+                    result["metadata_synced"] = True
 
             conn.commit()
 
