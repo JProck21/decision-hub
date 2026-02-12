@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Package, Building2, Shield, Zap, ArrowRight, Download, Star, Bot, Terminal } from "lucide-react";
 import { getRegistryStats, listSkillsFiltered } from "../api/client";
 import { useApi } from "../hooks/useApi";
+import { useCountUp } from "../hooks/useCountUp";
 import NeonCard from "../components/NeonCard";
 import GradeBadge from "../components/GradeBadge";
 import AnimatedTerminal from "../components/AnimatedTerminal";
@@ -19,6 +20,10 @@ export default function HomePage() {
   const totalSkills = stats?.total_skills ?? 0;
   const totalOrgs = stats?.total_orgs ?? 0;
   const totalDownloads = stats?.total_downloads ?? 0;
+
+  const [animatedSkills, skillsRef] = useCountUp(totalSkills);
+  const [animatedOrgs, orgsRef] = useCountUp(totalOrgs);
+  const [animatedDownloads, downloadsRef] = useCountUp(totalDownloads);
 
   return (
     <div className="container">
@@ -50,23 +55,23 @@ export default function HomePage() {
       {/* Stats */}
       <section className={styles.stats}>
         <NeonCard glow="cyan">
-          <div className={styles.statItem}>
+          <div className={styles.statItem} ref={skillsRef as React.RefObject<HTMLDivElement>}>
             <Package size={24} className={styles.statIcon} />
-            <span className={styles.statNumber}>{totalSkills}</span>
+            <span className={styles.statNumber}>{animatedSkills.toLocaleString()}</span>
             <span className={styles.statLabel}>Skills Published</span>
           </div>
         </NeonCard>
         <NeonCard glow="pink">
-          <div className={styles.statItem}>
+          <div className={styles.statItem} ref={orgsRef as React.RefObject<HTMLDivElement>}>
             <Building2 size={24} className={styles.statIcon} />
-            <span className={styles.statNumber}>{totalOrgs}</span>
+            <span className={styles.statNumber}>{animatedOrgs.toLocaleString()}</span>
             <span className={styles.statLabel}>Organizations</span>
           </div>
         </NeonCard>
         <NeonCard glow="purple">
-          <div className={styles.statItem}>
+          <div className={styles.statItem} ref={downloadsRef as React.RefObject<HTMLDivElement>}>
             <Download size={24} className={styles.statIcon} />
-            <span className={styles.statNumber}>{totalDownloads.toLocaleString()}</span>
+            <span className={styles.statNumber}>{animatedDownloads.toLocaleString()}</span>
             <span className={styles.statLabel}>Downloads</span>
           </div>
         </NeonCard>
