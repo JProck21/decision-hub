@@ -6,12 +6,13 @@ run gauntlet, publish or quarantine. No shared state between containers.
 
 import re
 import shutil
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 import httpx
 
+from decision_hub.domain.orgs import METADATA_CACHE_TTL
 from decision_hub.domain.publish import (
     build_quarantine_s3_key,
     build_s3_key,
@@ -30,7 +31,6 @@ CLONE_TIMEOUT_SECONDS = 120
 BOT_GITHUB_ID = "0"
 BOT_USERNAME = "dhub-crawler"
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
-_METADATA_CACHE_TTL = timedelta(hours=24)
 
 
 def fetch_owner_metadata(
@@ -124,11 +124,10 @@ def process_repo_on_modal(
 
         bot_user_id = UUID(bot_user_id_str)
 
+        # Ensure org exists and bot is a member (short-lived transaction)
         with engine.connect() as conn:
-            # Ensure bot user exists
             upsert_user(conn, github_id=BOT_GITHUB_ID, username=BOT_USERNAME)
 
-            # Ensure org exists and bot is a member
             org = find_org_by_slug(conn, slug)
             if org is None:
                 is_personal = repo_dict["owner_type"] == "User"
@@ -140,17 +139,19 @@ def process_repo_on_modal(
                 if existing is None:
                     insert_org_member(conn, org.id, bot_user_id, "admin")
 
-            # Sync GitHub metadata if never synced or stale (>24h)
-            needs_sync = (
-                org.github_synced_at is None or (datetime.now(UTC) - org.github_synced_at) > _METADATA_CACHE_TTL
+            conn.commit()
+
+        # Sync GitHub metadata outside the DB transaction to avoid
+        # holding a connection during the HTTP call (up to 15s timeout).
+        needs_sync = org.github_synced_at is None or (datetime.now(UTC) - org.github_synced_at) > METADATA_CACHE_TTL
+        if needs_sync:
+            meta = fetch_owner_metadata(
+                repo_dict["owner_login"],
+                repo_dict["owner_type"],
+                github_token,
             )
-            if needs_sync:
-                meta = fetch_owner_metadata(
-                    repo_dict["owner_login"],
-                    repo_dict["owner_type"],
-                    github_token,
-                )
-                if meta:
+            if meta:
+                with engine.connect() as conn:
                     update_org_github_metadata(
                         conn,
                         org.id,
@@ -159,35 +160,35 @@ def process_repo_on_modal(
                         description=meta.get("description"),
                         blog=meta.get("blog"),
                     )
-                    result["metadata_synced"] = True
+                    conn.commit()
+                result["metadata_synced"] = True
 
-            conn.commit()
+        # Clone and discover
+        repo_root = clone_repo(
+            repo_dict["clone_url"],
+            github_token=github_token,
+            timeout=CLONE_TIMEOUT_SECONDS,
+        )
+        tmp_dir = repo_root.parent
 
-            # Clone and discover
-            repo_root = clone_repo(
-                repo_dict["clone_url"],
-                github_token=github_token,
-                timeout=CLONE_TIMEOUT_SECONDS,
-            )
-            tmp_dir = repo_root.parent
+        # Capture commit SHA for checkpoint change-detection
+        sha_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if sha_proc.returncode == 0:
+            result["commit_sha"] = sha_proc.stdout.strip()
 
-            # Capture commit SHA for checkpoint change-detection
-            sha_proc = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if sha_proc.returncode == 0:
-                result["commit_sha"] = sha_proc.stdout.strip()
+        try:
+            skill_dirs = discover_skills(repo_root)
+            if not skill_dirs:
+                result["status"] = "no_skills"
+                return result
 
-            try:
-                skill_dirs = discover_skills(repo_root)
-                if not skill_dirs:
-                    result["status"] = "no_skills"
-                    return result
-
+            with engine.connect() as conn:
                 for skill_dir in skill_dirs:
                     try:
                         _publish_one_skill(
@@ -202,8 +203,8 @@ def process_repo_on_modal(
                     except Exception:
                         result["skills_failed"] += 1
                         conn.rollback()
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     except subprocess.TimeoutExpired:
         result["status"] = "error"

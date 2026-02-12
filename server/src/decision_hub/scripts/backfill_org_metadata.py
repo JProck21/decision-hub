@@ -62,7 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fix_cmd = sub.add_parser("fix-is-personal", help="Fix is_personal flag using GitHub API")
     _add_common_args(fix_cmd)
 
-    args = parser.parse_args(argv)
+    args, _remaining = parser.parse_known_args(argv)
 
     # Default to "metadata" when no subcommand given
     if args.command is None:
