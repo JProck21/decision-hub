@@ -125,7 +125,7 @@ dhub publish https://github.com/org/repo --ref v1.0
 
 | Command | Description |
 |---------|-------------|
-| `dhub list` | List all published skills |
+| `dhub list` | List all published skills (sorted by downloads) |
 | `dhub list --org ORG` | Filter by organization |
 | `dhub list --skill NAME` | Filter by skill name (substring match) |
 | `dhub ask "QUERY"` | Search for skills using natural language |

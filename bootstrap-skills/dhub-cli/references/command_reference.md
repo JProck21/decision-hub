@@ -173,13 +173,17 @@ Removes:
 
 ## dhub list
 
-List all published skills on the registry.
+List all published skills on the registry, sorted by download count (most popular first).
 
 ```
 dhub list
+dhub list --org ORG          # filter by organization
+dhub list --skill NAME       # filter by skill name (substring match)
+dhub list --page-size 20     # items per page (default 50, max 100)
+dhub list --all              # dump all pages without prompting
 ```
 
-No options. Displays a table with columns: Org, Skill, Version, Updated, Safety (grade), Author, Description.
+Displays a table with columns: Org, Skill, Category, Version, Updated (YYYY-MM-DD), Safety (grade), Downloads, Author, Description.
 
 ---
 
