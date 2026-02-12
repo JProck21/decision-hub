@@ -212,9 +212,12 @@ Legacy files use 3-digit numeric prefixes (`001_` through `011_`). Do not add ne
 ## Rules for AI Agents
 
 ### Forbidden commands
-Never run these — deployments and releases are handled by the human maintainer:
-- `make deploy-dev`, `make deploy-prod`, `modal deploy`, `./scripts/deploy.sh`
+Never run these — prod deployments and releases are handled by the human maintainer:
+- `make deploy-prod`, `./scripts/deploy.sh prod`
 - `make publish-cli`, `make release-cli`, `make publish`, `./scripts/publish.sh`, `./scripts/release-cli.sh`
+
+### Dev deploy
+You **may** deploy to dev when asked. Always use `make deploy-dev` — never bare `modal deploy` (it skips the frontend build).
 
 ### Forbidden file modifications
 - Never modify `.env.prod` or `.env.dev` — these contain production configuration
@@ -224,6 +227,14 @@ Never run these — deployments and releases are handled by the human maintainer
 - **Search for existing implementations** before writing new code (`grep`, `glob`, check `shared/src/`)
 - **Check open PRs** for overlapping work: `gh pr list --state open`
 - **Link to a GitHub issue.** If no issue exists, create one first.
+
+### Resolving PR review comments
+When fixing PR review comments, always complete **all three steps**:
+1. **Fix the code** and push the commit
+2. **Reply** to each comment explaining the fix
+3. **Resolve the thread** via GraphQL: `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'`
+
+To get unresolved thread IDs: `gh api graphql -f query='{ repository(owner: "pymc-labs", name: "decision-hub") { pullRequest(number: PR_NUM) { reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { body author { login } } } } } } } }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | {id, body: .comments.nodes[0].body[:80]}'`
 
 ## Releases & Deployment
 
