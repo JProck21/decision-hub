@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Package, Building2, Shield, Zap, ArrowRight, Download, Star, Bot, Terminal } from "lucide-react";
+import { Package, Building2, Users, Zap, ArrowRight, Download, Star, Bot, Terminal } from "lucide-react";
 import { getRegistryStats, listSkillsFiltered } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import { useCountUp } from "../hooks/useCountUp";
@@ -19,10 +19,12 @@ export default function HomePage() {
   const topSkills = latestSkills?.items ?? [];
   const totalSkills = stats?.total_skills ?? 0;
   const totalOrgs = stats?.total_orgs ?? 0;
+  const totalPublishers = stats?.total_publishers ?? 0;
   const totalDownloads = stats?.total_downloads ?? 0;
 
   const [animatedSkills, skillsRef] = useCountUp(totalSkills);
   const [animatedOrgs, orgsRef] = useCountUp(totalOrgs);
+  const [animatedPublishers, publishersRef] = useCountUp(totalPublishers);
   const [animatedDownloads, downloadsRef] = useCountUp(totalDownloads);
 
   return (
@@ -77,10 +79,10 @@ export default function HomePage() {
           </div>
         </NeonCard>
         <NeonCard glow="green">
-          <div className={styles.statItem}>
-            <Shield size={24} className={styles.statIcon} />
-            <span className={styles.statNumber}>A-F</span>
-            <span className={styles.statLabel}>Safety Grading</span>
+          <div className={styles.statItem} ref={publishersRef as React.RefObject<HTMLDivElement>}>
+            <Users size={24} className={styles.statIcon} />
+            <span className={styles.statNumber}>{animatedPublishers.toLocaleString()}</span>
+            <span className={styles.statLabel}>Publishers</span>
           </div>
         </NeonCard>
       </section>
