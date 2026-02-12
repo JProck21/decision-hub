@@ -137,6 +137,10 @@ async def exchange_token(
     org_slugs = sync_user_orgs(conn, user.id, github_org_logins, username)
     logger.debug("Synced orgs for {}: {}", username, org_slugs)
 
+    # Best-effort: sync GitHub metadata inline so avatars/descriptions are
+    # available immediately. The 24-hour TTL cache in sync_org_github_metadata
+    # skips orgs already synced recently, so this only adds latency on the
+    # first login per day.
     try:
         await sync_org_github_metadata(engine, gh_token, org_slugs, username)
     except Exception:
