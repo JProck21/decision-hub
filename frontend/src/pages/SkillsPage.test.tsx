@@ -19,6 +19,7 @@ function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
     download_count: 10,
     is_personal_org: false,
     category: "",
+    source_repo_url: null,
     ...overrides,
   };
 }

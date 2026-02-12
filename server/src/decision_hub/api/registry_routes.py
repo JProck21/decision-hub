@@ -199,6 +199,7 @@ class SkillSummary(BaseModel):
     is_personal_org: bool = False
     category: str = ""
     visibility: str = "public"
+    source_repo_url: str | None = None
 
 
 class PaginatedSkillsResponse(BaseModel):
@@ -576,6 +577,7 @@ def list_skills(
             is_personal_org=row.get("is_personal_org", False),
             category=row.get("category", ""),
             visibility=row.get("visibility", "public"),
+            source_repo_url=row.get("source_repo_url"),
         )
         for row in rows
     ]
@@ -620,6 +622,7 @@ def get_skill_summary(
         is_personal_org=org.is_personal if org else False,
         category=skill.category,
         visibility=skill.visibility,
+        source_repo_url=skill.source_repo_url,
     )
 
 
