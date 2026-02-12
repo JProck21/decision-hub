@@ -3,6 +3,7 @@
 import io
 import json
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -295,13 +296,33 @@ def _publish_from_git_repo(
             token,
             private=private,
         )
+
+        # Detect branch before cleanup — ref=None means the repo's default branch
+        branch = ref or _detect_branch(repo_root)
     finally:
         shutil.rmtree(repo_root.parent, ignore_errors=True)
 
     # Auto-tracking: create or manage tracker for this GitHub repo
     if not no_track:
-        branch = ref or "main"
         _ensure_tracker(api_url, build_headers(token), repo_url, branch, track=track)
+
+
+def _detect_branch(repo_root: Path) -> str:
+    """Detect the current branch of a cloned repo. Falls back to 'main'."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            if branch and branch != "HEAD":
+                return branch
+    except Exception:
+        pass
+    return "main"
 
 
 def _ensure_tracker(api_url: str, headers: dict, repo_url: str, branch: str, *, track: bool = False) -> None:

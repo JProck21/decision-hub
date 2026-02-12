@@ -107,6 +107,7 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
             )
 
             published_count = 0
+            errors: list[str] = []
             for skill_dir in skill_dirs:
                 try:
                     _publish_skill_from_tracker(
@@ -119,6 +120,7 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                     )
                     published_count += 1
                 except Exception as e:
+                    errors.append(f"{skill_dir.name}: {e}")
                     logger.warning(
                         "Tracker {}: failed to publish skill from {}: {}",
                         tracker.id,
@@ -126,14 +128,17 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                         e,
                     )
 
+            all_failed = published_count == 0 and len(errors) > 0
             with engine.connect() as conn:
                 update_skill_tracker(
                     conn,
                     tracker.id,
-                    last_commit_sha=current_sha,
+                    # Don't advance SHA when all publishes failed so
+                    # the commit is retried on the next check cycle.
+                    last_commit_sha=current_sha if not all_failed else None,
                     last_checked_at=now,
                     last_published_at=now if published_count > 0 else None,
-                    last_error=None,
+                    last_error="; ".join(errors)[:500] if all_failed else None,
                 )
                 conn.commit()
 
@@ -364,6 +369,8 @@ def _clone_repo(repo_url: str, branch: str, *, github_token: str | None = None) 
     cmd = ["git", "clone", "--depth", "1", "--branch", branch, clone_url, str(tmp_dir / "repo")]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        # Clean up the temp directory on failure to prevent leaks
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         # Sanitize token from error messages
         stderr = result.stderr.strip()
         if github_token:

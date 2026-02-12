@@ -1806,32 +1806,6 @@ def list_skill_trackers_for_user(conn: Connection, user_id: UUID) -> list[SkillT
     return [_row_to_skill_tracker(row) for row in rows]
 
 
-def find_due_trackers(conn: Connection) -> list[SkillTracker]:
-    """Find all enabled trackers that are due for a check.
-
-    A tracker is due when it has never been checked, or when
-    last_checked_at + poll_interval_minutes has passed.
-    """
-    now = sa.func.now()
-    stmt = sa.select(skill_trackers_table).where(
-        sa.and_(
-            skill_trackers_table.c.enabled.is_(True),
-            sa.or_(
-                skill_trackers_table.c.last_checked_at.is_(None),
-                now
-                > (
-                    skill_trackers_table.c.last_checked_at
-                    + sa.func.make_interval(
-                        mins=skill_trackers_table.c.poll_interval_minutes,
-                    )
-                ),
-            ),
-        )
-    )
-    rows = conn.execute(stmt).all()
-    return [_row_to_skill_tracker(row) for row in rows]
-
-
 def claim_due_trackers(conn: Connection) -> list[SkillTracker]:
     """Atomically claim all due trackers for processing.
 

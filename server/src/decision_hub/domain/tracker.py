@@ -7,11 +7,11 @@ import httpx
 # Matches GitHub HTTPS URLs like:
 #   https://github.com/owner/repo
 #   https://github.com/owner/repo.git
-_GITHUB_HTTPS_PATTERN = re.compile(r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?/?$")
+_GITHUB_HTTPS_PATTERN = re.compile(r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$")
 
 # Matches GitHub SSH URLs like:
 #   git@github.com:owner/repo.git
-_GITHUB_SSH_PATTERN = re.compile(r"git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$")
+_GITHUB_SSH_PATTERN = re.compile(r"git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
 
 
 def parse_github_repo_url(url: str) -> tuple[str, str]:

@@ -45,6 +45,21 @@ class TestParseGithubRepoUrl:
         with pytest.raises(ValueError, match="Not a GitHub repo URL"):
             parse_github_repo_url("not-a-url")
 
+    def test_parse_repo_with_dots_https(self):
+        owner, repo = parse_github_repo_url("https://github.com/socketio/socket.io")
+        assert owner == "socketio"
+        assert repo == "socket.io"
+
+    def test_parse_repo_with_dots_https_git_suffix(self):
+        owner, repo = parse_github_repo_url("https://github.com/vuejs/vue.js.git")
+        assert owner == "vuejs"
+        assert repo == "vue.js"
+
+    def test_parse_repo_with_dots_ssh(self):
+        owner, repo = parse_github_repo_url("git@github.com:socketio/socket.io.git")
+        assert owner == "socketio"
+        assert repo == "socket.io"
+
 
 class TestCheckRepoAccessible:
     @patch("decision_hub.domain.tracker.httpx.Client")

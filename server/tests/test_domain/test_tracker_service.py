@@ -2,7 +2,10 @@
 
 import io
 import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from decision_hub.domain.tracker_service import (
     _build_authenticated_url,
@@ -10,7 +13,9 @@ from decision_hub.domain.tracker_service import (
     _create_zip,
     _discover_skills,
     _parse_semver,
+    process_tracker,
 )
+from decision_hub.models import SkillTracker
 
 
 class TestBumpVersion:
@@ -151,3 +156,105 @@ class TestVersionDetermination:
         else:
             version = _bump_version(latest_semver)
         assert version == "2.0.1"
+
+
+class TestProcessTrackerAllFailed:
+    """Verify that process_tracker does NOT advance last_commit_sha when all publishes fail."""
+
+    def _make_tracker(self) -> SkillTracker:
+        return SkillTracker(
+            id=uuid4(),
+            user_id=uuid4(),
+            org_slug="myorg",
+            repo_url="https://github.com/myorg/myrepo",
+            branch="main",
+            enabled=True,
+            poll_interval_minutes=5,
+            last_commit_sha="old_sha_abc",
+            last_checked_at=None,
+            last_published_at=None,
+            last_error=None,
+            created_at=datetime.now(UTC),
+        )
+
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service.has_new_commits", return_value=(True, "new_sha_xyz"))
+    @patch("decision_hub.domain.tracker_service._clone_repo")
+    @patch("decision_hub.domain.tracker_service._discover_skills")
+    @patch("decision_hub.infra.storage.create_s3_client")
+    @patch("decision_hub.domain.tracker_service._publish_skill_from_tracker")
+    def test_all_failed_does_not_advance_sha(
+        self,
+        mock_publish,
+        _mock_s3,
+        mock_discover,
+        mock_clone,
+        _mock_commits,
+        _mock_token,
+    ):
+        """When every skill publish raises, SHA must not advance and last_error must be set."""
+        tracker = self._make_tracker()
+        mock_clone.return_value = Path("/tmp/fake/repo")
+        mock_discover.return_value = [Path("/tmp/fake/repo/skill-a")]
+        mock_publish.side_effect = RuntimeError("S3 outage")
+
+        mock_conn = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_settings = MagicMock()
+        mock_settings.database_url = "postgresql://test"
+
+        with patch("decision_hub.infra.database.update_skill_tracker") as mock_update:
+            process_tracker(tracker, mock_settings, mock_engine)
+
+            mock_update.assert_called_once()
+            _, kwargs = mock_update.call_args
+            # SHA should NOT be advanced
+            assert kwargs["last_commit_sha"] is None
+            # Error should be recorded
+            assert kwargs["last_error"] is not None
+            assert "S3 outage" in kwargs["last_error"]
+
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service.has_new_commits", return_value=(True, "new_sha_xyz"))
+    @patch("decision_hub.domain.tracker_service._clone_repo")
+    @patch("decision_hub.domain.tracker_service._discover_skills")
+    @patch("decision_hub.infra.storage.create_s3_client")
+    @patch("decision_hub.domain.tracker_service._publish_skill_from_tracker")
+    def test_partial_success_advances_sha(
+        self,
+        mock_publish,
+        _mock_s3,
+        mock_discover,
+        mock_clone,
+        _mock_commits,
+        _mock_token,
+    ):
+        """When at least one skill succeeds, SHA advances and no error is recorded."""
+        tracker = self._make_tracker()
+        mock_clone.return_value = Path("/tmp/fake/repo")
+        mock_discover.return_value = [
+            Path("/tmp/fake/repo/skill-a"),
+            Path("/tmp/fake/repo/skill-b"),
+        ]
+        # First succeeds, second fails
+        mock_publish.side_effect = [None, RuntimeError("gauntlet error")]
+
+        mock_conn = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_settings = MagicMock()
+        mock_settings.database_url = "postgresql://test"
+
+        with patch("decision_hub.infra.database.update_skill_tracker") as mock_update:
+            process_tracker(tracker, mock_settings, mock_engine)
+
+            mock_update.assert_called_once()
+            _, kwargs = mock_update.call_args
+            # SHA should advance since at least one succeeded
+            assert kwargs["last_commit_sha"] == "new_sha_xyz"
+            assert kwargs["last_error"] is None
