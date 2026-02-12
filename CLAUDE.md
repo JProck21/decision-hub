@@ -65,6 +65,33 @@ Common commands are available via `make`. Run `make help` to see all targets.
 
 Install pre-commit hooks once after cloning: `make install-hooks`.
 
+### Crawler
+
+Discovers GitHub repos containing `SKILL.md` files and publishes them through the gauntlet pipeline via Modal. Run from `server/`:
+
+```bash
+# Crawl up to 100 skills on dev (use a single fast strategy)
+cd server && DHUB_ENV=dev uv run --package decision-hub-server \
+  python -m decision_hub.scripts.github_crawler \
+  --max-skills 100 --strategies size --github-token "$(gh auth token)"
+
+# Full discovery (all 5 strategies — slow, ~15 min due to rate limits)
+cd server && DHUB_ENV=dev uv run --package decision-hub-server \
+  python -m decision_hub.scripts.github_crawler \
+  --github-token "$(gh auth token)"
+
+# Resume from checkpoint (skip discovery, go straight to processing)
+cd server && DHUB_ENV=dev uv run --package decision-hub-server \
+  python -m decision_hub.scripts.github_crawler \
+  --resume --github-token "$(gh auth token)"
+
+# Dry-run (discovery only, no processing)
+cd server && DHUB_ENV=dev uv run --package decision-hub-server \
+  python -m decision_hub.scripts.github_crawler --dry-run
+```
+
+**Key flags:** `--max-skills N` (stop after N published), `--strategies size|path|topic|fork|curated` (pick subset), `--fresh` (delete checkpoint), `--resume` (skip discovery). A GitHub token is required — unauthenticated rate limit is only 60 req/hr.
+
 ## Code Standards
 
 ### Design Principles & Conventions

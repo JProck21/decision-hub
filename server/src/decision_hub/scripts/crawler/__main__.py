@@ -7,6 +7,7 @@ Usage:
 import argparse
 import os
 import sys
+from collections.abc import Generator
 from pathlib import Path
 
 from loguru import logger
@@ -16,6 +17,14 @@ from decision_hub.scripts.crawler.models import CrawlStats, DiscoveredRepo, repo
 
 DEFAULT_CHECKPOINT_PATH = Path("crawl_checkpoint.json")
 ALL_STRATEGIES = ["size", "path", "topic", "fork", "curated"]
+
+_STRATEGY_LABELS: dict[str, str] = {
+    "size": "File-size partitioning",
+    "path": "Path-based search",
+    "topic": "Topic-based discovery",
+    "curated": "Curated list parsing",
+    "fork": "Fork scanning",
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -74,14 +83,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_discovery(
+def discover_batches(
     github_token: str | None,
     strategies: list[str],
     stats: CrawlStats,
-) -> dict[str, DiscoveredRepo]:
-    """Run the selected discovery strategies and return merged results."""
-    from rich.progress import Progress, SpinnerColumn, TextColumn
+) -> Generator[dict[str, DiscoveredRepo], None, None]:
+    """Yield a batch of newly-discovered repos after each strategy completes.
 
+    Each batch contains only repos not seen in previous batches, so the caller
+    can start processing immediately without waiting for all strategies.
+    """
     from decision_hub.scripts.crawler.discovery import (
         GitHubClient,
         parse_curated_lists,
@@ -92,15 +103,8 @@ def run_discovery(
     )
 
     gh = GitHubClient(github_token)
+    seen: set[str] = set()
     all_repos: dict[str, DiscoveredRepo] = {}
-
-    strategy_funcs: dict[str, str] = {
-        "size": "File-size partitioning",
-        "path": "Path-based search",
-        "topic": "Topic-based discovery",
-        "curated": "Curated list parsing",
-        "fork": "Fork scanning",
-    }
 
     # Fork scanning runs last because it depends on discovered repos
     ordered = [s for s in strategies if s != "fork"]
@@ -108,41 +112,47 @@ def run_discovery(
         ordered.append("fork")
 
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            TextColumn("{task.completed}/{task.total} strategies"),
-        ) as progress:
-            task = progress.add_task("Discovering repos...", total=len(ordered))
+        for name in ordered:
+            logger.info("Discovery strategy: {}", _STRATEGY_LABELS.get(name, name))
 
-            for name in ordered:
-                progress.update(task, description=f"Discovery: {strategy_funcs.get(name, name)}")
+            if name == "size":
+                found = search_by_file_size(gh, stats)
+            elif name == "path":
+                found = search_by_path(gh, stats)
+            elif name == "topic":
+                found = search_by_topic(gh, stats)
+            elif name == "curated":
+                found = parse_curated_lists(gh, stats)
+            elif name == "fork":
+                top_repos = sorted(
+                    all_repos.values(),
+                    key=lambda r: r.stars,
+                    reverse=True,
+                )[:10]
+                found = scan_forks(gh, [r.full_name for r in top_repos], stats)
+            else:
+                found = {}
 
-                if name == "size":
-                    found = search_by_file_size(gh, stats)
-                elif name == "path":
-                    found = search_by_path(gh, stats)
-                elif name == "topic":
-                    found = search_by_topic(gh, stats)
-                elif name == "curated":
-                    found = parse_curated_lists(gh, stats)
-                elif name == "fork":
-                    top_repos = sorted(
-                        all_repos.values(),
-                        key=lambda r: r.stars,
-                        reverse=True,
-                    )[:10]
-                    found = scan_forks(gh, [r.full_name for r in top_repos], stats)
-                else:
-                    found = {}
+            all_repos.update(found)
 
-                all_repos.update(found)
-                progress.advance(task)
+            # Yield only repos we haven't yielded before
+            new_batch = {k: v for k, v in found.items() if k not in seen}
+            seen.update(new_batch.keys())
+
+            if new_batch:
+                logger.info(
+                    "Strategy '{}' found {} new repos ({} total)",
+                    name,
+                    len(new_batch),
+                    len(all_repos),
+                )
+                yield new_batch
+            else:
+                logger.info("Strategy '{}' found 0 new repos", name)
     finally:
         gh.close()
 
     stats.repos_discovered = len(all_repos)
-    return all_repos
 
 
 def _filter_changed_repos(
@@ -202,12 +212,15 @@ def run_processing_phase(
     checkpoint_path: Path,
     max_skills: int | None,
     modal_app_name: str,
-) -> CrawlStats:
-    """Fan out repo processing to Modal containers."""
+    stats: CrawlStats,
+) -> bool:
+    """Fan out repo processing to Modal containers.
+
+    Returns True if max_skills cap was reached (caller should stop).
+    """
     import modal
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
-    stats = CrawlStats()
     fn = modal.Function.from_name(modal_app_name, "crawl_process_repo")
     repo_dicts = [repo_to_dict(r) for r in pending_repos]
 
@@ -222,10 +235,10 @@ def run_processing_phase(
         task = progress.add_task(
             "Processing repos",
             total=len(repo_dicts),
-            pub=0,
-            fail=0,
-            skip=0,
-            quar=0,
+            pub=stats.skills_published,
+            fail=stats.skills_failed,
+            skip=stats.skills_skipped,
+            quar=stats.skills_quarantined,
         )
 
         for result in fn.map(
@@ -254,15 +267,22 @@ def run_processing_phase(
 
             if max_skills is not None and stats.skills_published >= max_skills:
                 logger.info("Reached --max-skills cap ({}), stopping", max_skills)
-                break
+                checkpoint.flush(checkpoint_path)
+                return True
 
     checkpoint.flush(checkpoint_path)
-    return stats
+    return False
 
 
 def run_crawler(args: argparse.Namespace) -> None:
-    """Main crawler orchestrator."""
+    """Main crawler orchestrator.
+
+    Interleaves discovery and processing: each strategy's results are
+    processed via Modal immediately, so skills start publishing while
+    discovery continues.
+    """
     from decision_hub.logging import setup_logging
+    from decision_hub.scripts.crawler.models import dict_to_repo
     from decision_hub.settings import create_settings
 
     os.environ.setdefault("DHUB_ENV", args.env)
@@ -282,7 +302,7 @@ def run_crawler(args: argparse.Namespace) -> None:
         checkpoint_path.unlink()
         logger.info("Deleted existing checkpoint: {}", checkpoint_path)
 
-    # Phase 1: Discovery (or resume)
+    # --resume: process remaining repos from a previous checkpoint
     if args.resume:
         if not checkpoint_path.exists():
             logger.error("No checkpoint file found at {}. Cannot resume.", checkpoint_path)
@@ -293,68 +313,108 @@ def run_crawler(args: argparse.Namespace) -> None:
             len(checkpoint.discovered_repos),
             len(checkpoint.processed_repos),
         )
-    else:
-        stats = CrawlStats()
-        discovered = run_discovery(args.github_token, args.strategies, stats)
-        checkpoint = Checkpoint(
-            discovered_repos={fn: repo_to_dict(r) for fn, r in discovered.items()},
-        )
-        checkpoint.save(checkpoint_path)
-        logger.info(
-            "Discovery complete: {} repos found ({} API queries)",
-            len(discovered),
-            stats.queries_made,
-        )
 
-    # Dry-run: print stats and exit
+        if args.dry_run:
+            print(f"\nDiscovered {len(checkpoint.discovered_repos)} repos")
+            print(f"Already processed: {len(checkpoint.processed_repos)}")
+            print(f"Pending: {len(checkpoint.discovered_repos) - len(checkpoint.processed_repos)}")
+            return
+
+        all_repos = [dict_to_repo(d) for d in checkpoint.discovered_repos.values()]
+        pending = _filter_changed_repos(all_repos, checkpoint, args.github_token)
+        if not pending:
+            logger.info("Nothing to process. All repos already handled.")
+            return
+
+        from decision_hub.infra.database import create_engine, upsert_user
+        from decision_hub.scripts.crawler.processing import BOT_GITHUB_ID, BOT_USERNAME
+
+        engine = create_engine(settings.database_url)
+        with engine.connect() as conn:
+            bot_user = upsert_user(conn, github_id=BOT_GITHUB_ID, username=BOT_USERNAME)
+            conn.commit()
+
+        stats = CrawlStats()
+        run_processing_phase(
+            pending_repos=pending,
+            bot_user_id=str(bot_user.id),
+            github_token=args.github_token,
+            checkpoint=checkpoint,
+            checkpoint_path=checkpoint_path,
+            max_skills=args.max_skills,
+            modal_app_name=settings.modal_app_name,
+            stats=stats,
+        )
+        _print_summary(stats)
+        return
+
+    # Streaming mode: discover a batch → process it → discover next batch
+    checkpoint = Checkpoint.load(checkpoint_path) if checkpoint_path.exists() else Checkpoint()
+    discovery_stats = CrawlStats()
+    proc_stats = CrawlStats()
+    bot_user_id: str | None = None
+
+    for batch in discover_batches(args.github_token, args.strategies, discovery_stats):
+        # Merge newly discovered repos into checkpoint
+        for full_name, repo in batch.items():
+            checkpoint.discovered_repos[full_name] = repo_to_dict(repo)
+        checkpoint.save(checkpoint_path)
+
+        if args.dry_run:
+            logger.info("Dry-run: skipping processing of {} repos", len(batch))
+            continue
+
+        # Filter out already-processed / unchanged repos
+        batch_repos = list(batch.values())
+        pending = _filter_changed_repos(batch_repos, checkpoint, args.github_token)
+        if not pending:
+            continue
+
+        # Lazy-init bot user on first batch that needs processing
+        if bot_user_id is None:
+            from decision_hub.infra.database import create_engine, upsert_user
+            from decision_hub.scripts.crawler.processing import BOT_GITHUB_ID, BOT_USERNAME
+
+            engine = create_engine(settings.database_url)
+            with engine.connect() as conn:
+                bot_user = upsert_user(conn, github_id=BOT_GITHUB_ID, username=BOT_USERNAME)
+                conn.commit()
+            bot_user_id = str(bot_user.id)
+
+        logger.info("Processing batch: {} repos", len(pending))
+        hit_cap = run_processing_phase(
+            pending_repos=pending,
+            bot_user_id=bot_user_id,
+            github_token=args.github_token,
+            checkpoint=checkpoint,
+            checkpoint_path=checkpoint_path,
+            max_skills=args.max_skills,
+            modal_app_name=settings.modal_app_name,
+            stats=proc_stats,
+        )
+        if hit_cap:
+            break
+
     if args.dry_run:
         print(f"\nDiscovered {len(checkpoint.discovered_repos)} repos")
         print(f"Already processed: {len(checkpoint.processed_repos)}")
         print(f"Pending: {len(checkpoint.discovered_repos) - len(checkpoint.processed_repos)}")
-        return
+    else:
+        _print_summary(proc_stats)
 
-    # Phase 2: Processing via Modal
-    from decision_hub.scripts.crawler.models import dict_to_repo
 
-    all_repos = [dict_to_repo(d) for d in checkpoint.discovered_repos.values()]
-    pending = _filter_changed_repos(all_repos, checkpoint, args.github_token)
-    logger.info("{} repos pending processing ({} total discovered)", len(pending), len(all_repos))
-
-    if not pending:
-        logger.info("Nothing to process. All repos already handled.")
-        return
-
-    # Ensure bot user exists and get its ID
-    from decision_hub.infra.database import create_engine, upsert_user
-    from decision_hub.scripts.crawler.processing import BOT_GITHUB_ID, BOT_USERNAME
-
-    engine = create_engine(settings.database_url)
-    with engine.connect() as conn:
-        bot_user = upsert_user(conn, github_id=BOT_GITHUB_ID, username=BOT_USERNAME)
-        conn.commit()
-
-    proc_stats = run_processing_phase(
-        pending_repos=pending,
-        bot_user_id=str(bot_user.id),
-        github_token=args.github_token,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        max_skills=args.max_skills,
-        modal_app_name=settings.modal_app_name,
-    )
-
-    # Summary
+def _print_summary(stats: CrawlStats) -> None:
     print("\n--- Crawl Summary ---")
-    print(f"Repos processed: {proc_stats.repos_processed}")
-    print(f"Skills published: {proc_stats.skills_published}")
-    print(f"Skills skipped:   {proc_stats.skills_skipped}")
-    print(f"Skills failed:    {proc_stats.skills_failed}")
-    print(f"Skills quarantined: {proc_stats.skills_quarantined}")
-    print(f"Orgs created:     {proc_stats.orgs_created}")
-    print(f"Emails saved:     {proc_stats.emails_saved}")
-    if proc_stats.errors:
-        print(f"Errors: {len(proc_stats.errors)}")
-        for err in proc_stats.errors[:10]:
+    print(f"Repos processed: {stats.repos_processed}")
+    print(f"Skills published: {stats.skills_published}")
+    print(f"Skills skipped:   {stats.skills_skipped}")
+    print(f"Skills failed:    {stats.skills_failed}")
+    print(f"Skills quarantined: {stats.skills_quarantined}")
+    print(f"Orgs created:     {stats.orgs_created}")
+    print(f"Emails saved:     {stats.emails_saved}")
+    if stats.errors:
+        print(f"Errors: {len(stats.errors)}")
+        for err in stats.errors[:10]:
             print(f"  - {err}")
 
 

@@ -1,10 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Building2, Package, ArrowRight, Search, Filter, User } from "lucide-react";
-import { listAllSkills } from "../api/client";
+import { Building2, Package, ArrowRight, Search, Filter } from "lucide-react";
+import { listAllSkills, getOrgProfile } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import { aggregateOrgs, filterOrgs } from "../lib/filters";
+import type { OrgProfile } from "../types/api";
 import NeonCard from "../components/NeonCard";
+import OrgAvatar from "../components/OrgAvatar";
 import LoadingSpinner from "../components/LoadingSpinner";
 import styles from "./OrgsPage.module.css";
 
@@ -14,11 +16,31 @@ export default function OrgsPage() {
   const { data: skills, loading, error } = useApi(() => listAllSkills(), []);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<OrgType>("orgs");
+  const [profiles, setProfiles] = useState<Map<string, OrgProfile>>(new Map());
 
   const orgs = useMemo(
     () => aggregateOrgs(skills ?? []),
     [skills],
   );
+
+  // Fetch org profiles in parallel once orgs are known
+  useEffect(() => {
+    if (orgs.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      orgs.map((o) =>
+        getOrgProfile(o.slug).catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map = new Map<string, OrgProfile>();
+      for (const p of results) {
+        if (p) map.set(p.slug, p);
+      }
+      setProfiles(map);
+    });
+    return () => { cancelled = true; };
+  }, [orgs]);
 
   const filtered = useMemo(
     () => filterOrgs(orgs, search, typeFilter),
@@ -90,7 +112,11 @@ export default function OrgsPage() {
               <NeonCard glow="purple">
                 <div className={styles.card}>
                   <div className={styles.cardIcon}>
-                    {org.isPersonal ? <User size={32} /> : <Building2 size={32} />}
+                    <OrgAvatar
+                      avatarUrl={profiles.get(org.slug)?.avatar_url}
+                      isPersonal={org.isPersonal}
+                      size="md"
+                    />
                   </div>
                   <h3 className={styles.cardName}>{org.slug}</h3>
                   <div className={styles.cardStats}>
