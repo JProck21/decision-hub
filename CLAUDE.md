@@ -110,6 +110,11 @@ cd server && DHUB_ENV=dev uv run --package decision-hub-server \
 - **Comments**: Explain business logic, assumptions, and choices — not the code verbatim
 - **Isolate side operations**: When a non-critical operation (metadata sync, analytics, notifications) runs alongside a critical path, always (1) wrap it in try/except so failures don't block the main flow, and (2) if it uses a separate DB connection, commit pending writes first so they're visible
 - **Reset state on context changes (React)**: When a component holds local state (`useState`, `useRef`) and receives changing inputs (URL params, props), audit which state becomes stale and add `useEffect(() => reset(), [key])` or use a `key=` prop to force remount
+- **SQL query correctness**: Every query with `LIMIT` must have an explicit `ORDER BY` with a unique tiebreaker, and every field in `SELECT` must appear in the returned response dict
+- **Sanitize subprocess credentials**: Never pass secrets (tokens, keys) in subprocess command arguments; catch `TimeoutExpired` and `CalledProcessError` and raise sanitized errors that strip credentials
+- **Use server totals, not local array length**: After introducing pagination, never use `.length` of a local array as a display count — always use the server's `total` field
+- **Don't advance state on failure**: For every state-advancing side effect (advancing cursors, clearing errors, updating timestamps), explicitly handle the failure case — do not advance state when the operation it represents has failed
+- **Clean up after refactors**: After every refactor, search for all references to the old function/argument and remove dead code — no orphaned functions, unused imports, or selected-but-unmapped fields
 
 ### Logging
 
