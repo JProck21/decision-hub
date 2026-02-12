@@ -60,7 +60,7 @@ const server = setupServer(
       items: SKILLS,
       total: SKILLS.length,
       page: 1,
-      page_size: 12,
+      page_size: 100,
       total_pages: 1,
     }),
   ),

@@ -584,6 +584,7 @@ def list_command(
     console.print(f"Registry: [dim]{api_url}[/]")
 
     page = 1
+    found_any = False
     with httpx.Client(timeout=60) as client:
         while True:
             resp = client.get(
@@ -598,21 +599,24 @@ def list_command(
             total = data["total"]
             total_pages = data["total_pages"]
 
-            if not items and page == 1:
-                filter_msg = ""
-                if org:
-                    filter_msg += f" for org '{org}'"
-                if skill:
-                    filter_msg += f" matching '{skill}'"
-                console.print(f"No skills found{filter_msg}.")
+            if total == 0:
+                console.print("No skills found.")
                 break
 
             if items:
+                found_any = True
                 console.print(_render_skills_table(items))
 
             console.print(f"[dim]Page {page} of {total_pages} ({total} total skills)[/]")
 
             if page >= total_pages:
+                if not found_any:
+                    filter_msg = ""
+                    if org:
+                        filter_msg += f" for org '{org}'"
+                    if skill:
+                        filter_msg += f" matching '{skill}'"
+                    console.print(f"No skills found{filter_msg}.")
                 break
 
             if all_pages:
