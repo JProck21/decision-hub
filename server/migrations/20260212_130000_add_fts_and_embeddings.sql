@@ -38,6 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_skills_embedding_hnsw
     WITH (m = 16, ef_construction = 64);
 
 -- 7. Backfill tsvector (trigger fires on UPDATE, no API calls needed)
+-- Temporarily disable updated_at trigger to preserve historical timestamps.
+ALTER TABLE skills DISABLE TRIGGER trg_skills_updated_at;
 UPDATE skills SET name = name WHERE search_vector IS NULL;
+ALTER TABLE skills ENABLE TRIGGER trg_skills_updated_at;
 
 -- Embedding backfill requires Gemini API calls — see backfill_embeddings.py script

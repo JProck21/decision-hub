@@ -143,7 +143,14 @@ def generate_and_store_skill_embedding(
             settings.embedding_model,
             EMBEDDING_DIMENSIONS,
         )
-        update_skill_embedding(conn, skill_id, embedding)
+        # Use a savepoint so a DB error doesn't poison the outer transaction.
+        nested = conn.begin_nested()
+        try:
+            update_skill_embedding(conn, skill_id, embedding)
+            nested.commit()
+        except Exception:
+            nested.rollback()
+            raise
     except Exception:
         logger.opt(exception=True).warning(
             "Failed to generate embedding for skill={} ({}/{})",
