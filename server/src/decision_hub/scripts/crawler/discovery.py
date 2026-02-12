@@ -35,7 +35,7 @@ def search_by_file_size(gh: "GitHubClient", stats: CrawlStats) -> dict[str, Disc
     """Split filename:SKILL.md into non-overlapping byte-size ranges."""
     repos: dict[str, DiscoveredRepo] = {}
     for lo, hi in SIZE_RANGES:
-        size_q = f"size:>{lo}" if hi is None else f"size:{lo}..{hi}"
+        size_q = f"size:>={lo}" if hi is None else f"size:{lo}..{hi}"
         query = f"filename:SKILL.md {size_q}"
         found = _run_code_search(gh, query, stats)
         repos.update(found)

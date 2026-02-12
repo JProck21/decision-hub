@@ -637,7 +637,7 @@ class TestCloneRepo:
         from decision_hub.domain.repo_utils import clone_repo
 
         mock_run.side_effect = subprocess.TimeoutExpired("git", 120)
-        with pytest.raises(subprocess.TimeoutExpired):
+        with pytest.raises(RuntimeError, match="timed out"):
             clone_repo("https://github.com/a/b.git", timeout=120)
 
 

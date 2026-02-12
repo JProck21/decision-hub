@@ -3,6 +3,7 @@
 import io
 import json
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -278,6 +279,7 @@ def _publish_from_git_repo(
             console.print(f"[red]Error: {exc}[/]")
             raise typer.Exit(1) from None
 
+    publish_exit: typer.Exit | None = None
     try:
         skill_dirs = discover_skills(repo_root)
 
@@ -285,23 +287,50 @@ def _publish_from_git_repo(
             console.print("[yellow]No skills found in the repository.[/]")
             raise typer.Exit(1)
 
-        _publish_discovered_skills(
-            skill_dirs,
-            repo_root,
-            org,
-            version,
-            bump_level,
-            api_url,
-            token,
-            private=private,
-        )
+        try:
+            _publish_discovered_skills(
+                skill_dirs,
+                repo_root,
+                org,
+                version,
+                bump_level,
+                api_url,
+                token,
+                private=private,
+            )
+        except typer.Exit as e:
+            # Capture partial-failure exit so auto-tracking still runs
+            publish_exit = e
+
+        # Detect branch before cleanup — ref=None means the repo's default branch
+        branch = ref or _detect_branch(repo_root)
     finally:
         shutil.rmtree(repo_root.parent, ignore_errors=True)
 
     # Auto-tracking: create or manage tracker for this GitHub repo
     if not no_track:
-        branch = ref or "main"
         _ensure_tracker(api_url, build_headers(token), repo_url, branch, track=track)
+
+    if publish_exit is not None:
+        raise publish_exit
+
+
+def _detect_branch(repo_root: Path) -> str:
+    """Detect the current branch of a cloned repo. Falls back to 'main'."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            if branch and branch != "HEAD":
+                return branch
+    except Exception:
+        pass
+    return "main"
 
 
 def _ensure_tracker(api_url: str, headers: dict, repo_url: str, branch: str, *, track: bool = False) -> None:

@@ -4,6 +4,7 @@ Used by both the tracker service (auto-republish) and the GitHub crawler.
 """
 
 import io
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -27,7 +28,7 @@ def clone_repo(
     Returns the path to the cloned repo root.
 
     Raises:
-        subprocess.TimeoutExpired: If clone exceeds timeout.
+        RuntimeError: If clone times out (sanitized to avoid leaking tokens).
         subprocess.CalledProcessError: If clone fails.
     """
     if github_token:
@@ -39,13 +40,20 @@ def clone_repo(
         cmd.extend(["--branch", branch])
     cmd.extend([clone_url, str(tmp_dir / "repo")])
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        # Clean up and raise a sanitized error (TimeoutExpired includes
+        # the full cmd list which may contain the github_token in the URL)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError(f"git clone timed out after {timeout}s") from None
     if result.returncode != 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         stderr = result.stderr.strip()
         if github_token:
             stderr = stderr.replace(github_token, "***")

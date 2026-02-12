@@ -56,9 +56,9 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
     from decision_hub.infra.storage import create_s3_client
 
     now = datetime.now(UTC)
-    github_token = _resolve_github_token(engine, tracker, settings)
 
     try:
+        github_token = _resolve_github_token(engine, tracker, settings)
         owner, repo = parse_github_repo_url(tracker.repo_url)
         changed, current_sha = has_new_commits(
             owner,
@@ -110,9 +110,10 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
             )
 
             published_count = 0
+            errors: list[str] = []
             for skill_dir in skill_dirs:
                 try:
-                    _publish_skill_from_tracker(
+                    actually_published = _publish_skill_from_tracker(
                         skill_dir=skill_dir,
                         org_slug=tracker.org_slug,
                         tracker=tracker,
@@ -120,8 +121,10 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                         engine=engine,
                         s3_client=s3_client,
                     )
-                    published_count += 1
+                    if actually_published:
+                        published_count += 1
                 except Exception as e:
+                    errors.append(f"{skill_dir.name}: {e}")
                     logger.warning(
                         "Tracker {}: failed to publish skill from {}: {}",
                         tracker.id,
@@ -129,14 +132,17 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                         e,
                     )
 
+            all_failed = published_count == 0 and len(errors) > 0
             with engine.connect() as conn:
                 update_skill_tracker(
                     conn,
                     tracker.id,
-                    last_commit_sha=current_sha,
+                    # Don't advance SHA when all publishes failed so
+                    # the commit is retried on the next check cycle.
+                    last_commit_sha=current_sha if not all_failed else None,
                     last_checked_at=now,
                     last_published_at=now if published_count > 0 else None,
-                    last_error=None,
+                    last_error="; ".join(errors)[:500] if all_failed else None,
                 )
                 conn.commit()
 
@@ -175,11 +181,14 @@ def _publish_skill_from_tracker(
     settings: Settings,
     engine,
     s3_client,
-) -> None:
+) -> bool:
     """Publish a single skill directory through the full pipeline.
 
     Mirrors the publish endpoint logic: zip -> extract -> gauntlet -> upload -> record.
     Skips republish if the zip checksum hasn't changed from the latest version.
+
+    Returns True if a new version was actually published to S3,
+    False if skipped (no content changes) or rejected by the gauntlet.
     """
     from decision_hub.api.registry_service import (
         maybe_trigger_agent_assessment,
@@ -218,7 +227,7 @@ def _publish_skill_from_tracker(
         latest = resolve_latest_version(conn, org_slug, skill_name)
         if latest is not None and latest.checksum == checksum:
             logger.info("Tracker: no content changes for {}/{}, skipping", org_slug, skill_name)
-            return
+            return False
 
         # Determine version: prefer manifest version_hint if present and higher
         manifest_version = manifest.runtime.version_hint if manifest.runtime else None
@@ -268,7 +277,7 @@ def _publish_skill_from_tracker(
                 llm_reasoning=llm_reasoning,
             )
             conn.commit()
-            return
+            return False
 
         # Upsert skill record
         skill = find_skill(conn, org.id, skill_name)
@@ -334,6 +343,7 @@ def _publish_skill_from_tracker(
         version,
         report.grade,
     )
+    return True
 
 
 def _resolve_github_token(engine, tracker: SkillTracker, settings: Settings) -> str | None:
