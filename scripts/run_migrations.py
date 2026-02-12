@@ -104,7 +104,11 @@ def _bootstrap_legacy(conn: sa.engine.Connection, files: list[Path]) -> None:
 def run_migrations() -> int:
     """Apply pending migrations. Returns 0 on success, 1 on error."""
     database_url = _get_database_url()
-    engine = sa.create_engine(database_url, poolclass=NullPool)
+    engine = sa.create_engine(
+        database_url,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 10},
+    )
 
     files = _get_migration_files()
     if not files:
