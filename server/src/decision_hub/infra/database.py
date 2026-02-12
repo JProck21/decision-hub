@@ -160,6 +160,7 @@ skills_table = Table(
     Column("download_count", sa.Integer, nullable=False, server_default="0"),
     Column("category", String, nullable=False, server_default=""),
     Column("visibility", String(10), nullable=False, server_default="public"),
+    Column("source_repo_url", Text, nullable=True),
     Column("search_vector", TSVECTOR, nullable=True),
     Column("embedding", Vector(768), nullable=True),
     Column(
@@ -568,6 +569,7 @@ def _row_to_skill(row: sa.Row) -> Skill:
         download_count=row.download_count,
         category=row.category,
         visibility=row.visibility,
+        source_repo_url=row.source_repo_url,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -799,6 +801,7 @@ def insert_skill(
     category: str = "",
     *,
     visibility: str = "public",
+    source_repo_url: str | None = None,
 ) -> Skill:
     """Register a new skill under an organization.
 
@@ -809,15 +812,15 @@ def insert_skill(
         description: Short description from SKILL.md frontmatter.
         category: Skill category from LLM classification.
         visibility: Skill visibility ('public' or 'org').
+        source_repo_url: URL of the source GitHub repository.
 
     Returns:
         The newly created Skill.
     """
-    stmt = (
-        sa.insert(skills_table)
-        .values(org_id=org_id, name=name, description=description, category=category, visibility=visibility)
-        .returning(*skills_table.c)
-    )
+    values: dict = dict(org_id=org_id, name=name, description=description, category=category, visibility=visibility)
+    if source_repo_url is not None:
+        values["source_repo_url"] = source_repo_url
+    stmt = sa.insert(skills_table).values(**values).returning(*skills_table.c)
     row = conn.execute(stmt).one()
     skill = _row_to_skill(row)
     logger.debug("Inserted skill name={} org={} visibility={} id={}", name, org_id, visibility, skill.id)
@@ -923,6 +926,12 @@ def _row_to_skill_access_grant(row: sa.Row) -> SkillAccessGrant:
 def update_skill_visibility(conn: Connection, skill_id: UUID, visibility: str) -> None:
     """Update the visibility of an existing skill."""
     stmt = sa.update(skills_table).where(skills_table.c.id == skill_id).values(visibility=visibility)
+    conn.execute(stmt)
+
+
+def update_skill_source_repo_url(conn: Connection, skill_id: UUID, source_repo_url: str) -> None:
+    """Set or update the source GitHub repository URL for a skill."""
+    stmt = sa.update(skills_table).where(skills_table.c.id == skill_id).values(source_repo_url=source_repo_url)
     conn.execute(stmt)
 
 
@@ -1431,6 +1440,7 @@ def fetch_all_skills_for_index(
         skills_table.c.download_count,
         skills_table.c.category,
         skills_table.c.visibility,
+        skills_table.c.source_repo_url,
         latest_version.c.semver.label("latest_version"),
         latest_version.c.eval_status,
         latest_version.c.created_at,
@@ -2363,12 +2373,17 @@ def list_skill_trackers_for_user(conn: Connection, user_id: UUID) -> list[SkillT
     return [_row_to_skill_tracker(row) for row in rows]
 
 
-def claim_due_trackers(conn: Connection) -> list[SkillTracker]:
-    """Atomically claim all due trackers for processing.
+def claim_due_trackers(conn: Connection, *, batch_size: int = 100) -> list[SkillTracker]:
+    """Atomically claim a batch of due trackers for processing.
 
     Uses SELECT ... FOR UPDATE SKIP LOCKED to prevent concurrent runs
     from double-processing the same tracker. Claims each selected row
     by setting last_checked_at = now(), so the next run will skip it.
+
+    Args:
+        batch_size: Maximum number of trackers to claim per invocation.
+            Prevents unbounded row locks and keeps processing within
+            the DB statement timeout.
 
     Returns the claimed SkillTracker objects (with their pre-claim state).
     """
@@ -2385,9 +2400,17 @@ def claim_due_trackers(conn: Connection) -> list[SkillTracker]:
         ),
     )
 
-    # Select due tracker IDs with row-level locking, skipping already-locked rows
+    # Select due tracker IDs with row-level locking, skipping already-locked rows.
+    # ORDER BY prioritises never-checked (NULLS FIRST) then most-overdue,
+    # which matches the ix_skill_trackers_due index.
+    # LIMIT prevents unbounded lock acquisition at scale.
     locked_ids_cte = (
-        sa.select(skill_trackers_table.c.id).where(due_filter).with_for_update(skip_locked=True).cte("locked_ids")
+        sa.select(skill_trackers_table.c.id)
+        .where(due_filter)
+        .order_by(skill_trackers_table.c.last_checked_at.asc().nulls_first())
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
+        .cte("locked_ids")
     )
 
     # Claim by bumping last_checked_at, returning full rows

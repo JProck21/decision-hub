@@ -11,6 +11,7 @@ export interface SkillSummary {
   download_count: number;
   is_personal_org: boolean;
   category: string;
+  source_repo_url: string | null;
 }
 
 export interface PaginatedSkillsResponse {

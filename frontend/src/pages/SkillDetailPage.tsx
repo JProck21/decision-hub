@@ -12,6 +12,7 @@ import {
   Clock,
   Copy,
   Check,
+  Github,
 } from "lucide-react";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -126,7 +127,7 @@ export default function SkillDetailPage() {
   };
 
   const handleCopyInstall = () => {
-    navigator.clipboard.writeText(`dhub install ${orgSlug}/${skillName}`);
+    navigator.clipboard.writeText(`dhub install ${orgSlug}/${skillName} --agent all`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -188,6 +189,16 @@ export default function SkillDetailPage() {
               <span className={styles.metaItem}>
                 <Clock size={14} /> {skill.updated_at}
               </span>
+            )}
+            {skill.source_repo_url && (
+              <a
+                href={skill.source_repo_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.metaItem}
+              >
+                <Github size={14} /> Source
+              </a>
             )}
           </div>
         </div>

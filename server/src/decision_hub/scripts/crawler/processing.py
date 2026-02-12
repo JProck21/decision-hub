@@ -188,6 +188,7 @@ def process_repo_on_modal(
                 result["status"] = "no_skills"
                 return result
 
+            source_repo_url = f"https://github.com/{repo_dict['full_name']}"
             with engine.connect() as conn:
                 for skill_dir in skill_dirs:
                     try:
@@ -198,6 +199,7 @@ def process_repo_on_modal(
                             org,
                             skill_dir,
                             result,
+                            source_repo_url=source_repo_url,
                         )
                         conn.commit()
                     except Exception:
@@ -219,7 +221,9 @@ def process_repo_on_modal(
     return result
 
 
-def _publish_one_skill(conn, s3_client, settings, org, skill_dir: Path, result: dict) -> None:
+def _publish_one_skill(
+    conn, s3_client, settings, org, skill_dir: Path, result: dict, *, source_repo_url: str | None = None
+) -> None:
     """Parse, gauntlet-check, and publish a single skill. Mutates result counts."""
     from decision_hub.api.registry_service import run_gauntlet_pipeline
     from decision_hub.infra.database import (
@@ -230,6 +234,7 @@ def _publish_one_skill(conn, s3_client, settings, org, skill_dir: Path, result: 
         insert_version,
         resolve_latest_version,
         update_skill_description,
+        update_skill_source_repo_url,
     )
     from decision_hub.infra.storage import compute_checksum, upload_skill_zip
     from dhub_core.manifest import parse_skill_md
@@ -246,9 +251,11 @@ def _publish_one_skill(conn, s3_client, settings, org, skill_dir: Path, result: 
     # Upsert skill record
     skill = find_skill(conn, org.id, name)
     if skill is None:
-        skill = insert_skill(conn, org.id, name, description)
+        skill = insert_skill(conn, org.id, name, description, source_repo_url=source_repo_url)
     else:
         update_skill_description(conn, skill.id, description)
+        if source_repo_url and skill.source_repo_url != source_repo_url:
+            update_skill_source_repo_url(conn, skill.id, source_repo_url)
 
     # Determine version (auto-bump patch or start at 0.1.0)
     latest = resolve_latest_version(conn, org.slug, name)

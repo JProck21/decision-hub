@@ -68,6 +68,11 @@
   font-size: 0.85rem;
   color: var(--text-muted);
   font-family: 'Share Tech Mono', monospace;
+  text-decoration: none;
+}
+
+a.metaItem:hover {
+  color: var(--neon-cyan);
 }
 
 .headerRight {
