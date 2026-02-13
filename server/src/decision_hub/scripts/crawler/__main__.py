@@ -46,8 +46,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--env",
         choices=["dev", "prod"],
-        default="dev",
-        help="Decision Hub environment (default: dev)",
+        default=os.environ.get("DHUB_ENV", "dev"),
+        help="Decision Hub environment (default: $DHUB_ENV or dev)",
     )
     parser.add_argument(
         "--strategies",
