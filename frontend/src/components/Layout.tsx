@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Outlet, Link, useLocation } from "react-router-dom";
-import { Zap, Package, Building2, Home, BookOpen } from "lucide-react";
+import { Zap, Package, Building2, Home, BookOpen, Menu, X } from "lucide-react";
 import styles from "./Layout.module.css";
 
 const NAV_ITEMS = [
@@ -11,6 +12,12 @@ const NAV_ITEMS = [
 
 export default function Layout() {
   const location = useLocation();
+  const [mobileMenuState, setMobileMenuState] = useState({
+    isOpen: false,
+    openedOnPath: location.pathname,
+  });
+  const mobileMenuOpen =
+    mobileMenuState.isOpen && mobileMenuState.openedOnPath === location.pathname;
 
   return (
     <div className={styles.layout}>
@@ -21,11 +28,30 @@ export default function Layout() {
             <span className={styles.logoText}>Decision Hub</span>
           </Link>
 
-          <nav className={styles.nav}>
+          <button
+            className={styles.menuToggle}
+            onClick={() =>
+              setMobileMenuState(() => ({
+                isOpen: !mobileMenuOpen,
+                openedOnPath: location.pathname,
+              }))
+            }
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+          >
+            {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
+          </button>
+
+          <nav className={`${styles.nav} ${mobileMenuOpen ? styles.navOpen : ""}`}>
             {NAV_ITEMS.map(({ path, label, icon: Icon }) => (
               <Link
                 key={path}
                 to={path}
+                onClick={() =>
+                  setMobileMenuState({
+                    isOpen: false,
+                    openedOnPath: location.pathname,
+                  })
+                }
                 className={`${styles.navLink} ${
                   (path === "/" ? location.pathname === "/" : location.pathname.startsWith(path)) ? styles.navLinkActive : ""
                 }`}
