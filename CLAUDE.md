@@ -294,6 +294,23 @@ After implementing significant changes, check whether these need updating:
 - **`README.md`** — new/changed CLI commands, API endpoints, features, setup requirements, or architecture
 - **`bootstrap-skills/dhub-cli/SKILL.md`** and **`bootstrap-skills/dhub-cli/references/command_reference.md`** — new/changed CLI commands, flags, or behavior
 
+## Monitoring Trackers
+
+Trackers (`skill_trackers` table) poll GitHub repos for new commits and republish changed skills. The `check_trackers` Modal cron runs every 5 minutes. Crawled skills are **not** auto-tracked — trackers are opt-in via `dhub track add`.
+
+**Check Modal logs for failures:**
+```bash
+modal app logs decision-hub 2>&1 | grep -i "tracker\|check_trackers"     # prod
+modal app logs decision-hub-dev 2>&1 | grep -i "tracker\|check_trackers"  # dev
+```
+
+**Query tracker health in DB:**
+```sql
+-- Failed trackers
+SELECT repo_url, last_checked_at, last_error
+FROM skill_trackers WHERE last_error IS NOT NULL AND enabled = true;
+```
+
 ## Troubleshooting
 
 ### Modal Cold Starts
