@@ -156,7 +156,7 @@ def run_eval_task(
 crawler_image = image.apt_install("git")
 
 
-@app.function(image=crawler_image, secrets=secrets, timeout=300, concurrency_limit=50)
+@app.function(image=crawler_image, secrets=secrets, timeout=300, max_containers=50)
 def crawl_process_repo(
     repo_dict: dict,
     bot_user_id: str,
