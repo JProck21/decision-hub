@@ -52,6 +52,7 @@ def _ensure_tracking_table(conn: sa.engine.Connection) -> None:
             )
         """)
     )
+    conn.execute(text("ALTER TABLE schema_migrations ENABLE ROW LEVEL SECURITY"))
 
 
 def _has_table(conn: sa.engine.Connection, table_name: str) -> bool:
