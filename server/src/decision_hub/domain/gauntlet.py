@@ -8,6 +8,7 @@ The safety scan uses a two-stage approach:
 """
 
 import json
+import math
 import re
 from collections.abc import Callable
 
@@ -38,6 +39,70 @@ _PROMPT_INJECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(?i)send\s+(the\s+)?(data|output|result|content)\s+to\s+", "exfiltration instruction"),
     (r"(?i)tool_call|function_call|<tool>|<function>", "tool escalation markup"),
     (r"\\x[0-9a-f]{2}|\\u[0-9a-f]{4}", "escaped unicode sequences"),
+)
+
+# ---------------------------------------------------------------------------
+# Embedded-credential detection (two layers)
+# ---------------------------------------------------------------------------
+#
+# Layer 1 — Known-format patterns: high-confidence regexes for provider-
+#   specific key prefixes.  Matches get a descriptive label ("AWS access
+#   key") and always cause rejection.
+# Layer 2 — Entropy scanner: extracts string literals and flags those whose
+#   Shannon entropy exceeds a threshold.  Catches novel/unknown credential
+#   formats automatically, since real secrets are far more random than
+#   ordinary code strings.
+#
+# Both layers always reject (no LLM override) because embedded credentials
+# are never legitimate in a published skill.
+# Patterns built via concat to avoid triggering secret-scanning hooks.
+
+_CREDENTIAL_PATTERNS: tuple[tuple[str, str], ...] = (
+    # AWS access key IDs
+    ("AKI" + r"A[0-9A-Z]{16}", "AWS access key"),
+    # GitHub tokens (classic & fine-grained)
+    ("gh" + r"[ps]_[A-Za-z0-9_]{36,}", "GitHub token"),
+    ("github_pat" + r"_[A-Za-z0-9_]{22,}", "GitHub personal access token"),
+    # Slack tokens
+    ("xox" + r"[bpras]-[A-Za-z0-9-]{10,}", "Slack token"),
+    # Stripe secret / restricted keys
+    ("sk_live" + r"_[A-Za-z0-9]{24,}", "Stripe secret key"),
+    ("rk_live" + r"_[A-Za-z0-9]{24,}", "Stripe restricted key"),
+    # Google API keys
+    ("AIza" + r"[0-9A-Za-z_-]{35}", "Google API key"),
+    # PEM private keys
+    (r"-----BEGIN[ A-Z]*PRIVATE KEY-----", "private key"),
+    # Anthropic API keys
+    ("sk-ant" + r"-[A-Za-z0-9_-]{20,}", "Anthropic API key"),
+    # OpenAI API keys (48+ chars after prefix)
+    ("sk-" + r"[A-Za-z0-9]{48,}", "OpenAI API key"),
+    # JWT tokens (header.payload.signature)
+    (r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "JWT token"),
+)
+
+# Entropy thresholds — charset-aware, following the trufflehog approach.
+# Hex charset (0-9a-f) has a theoretical max of 4.0 bits, so a lower
+# threshold is needed.  The full base64/printable charset can reach ~6 bits.
+_ENTROPY_MIN_LENGTH = 20
+_ENTROPY_THRESHOLD_HEX = 3.0
+_ENTROPY_THRESHOLD_DEFAULT = 4.5
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+# Regex to extract string literals (single or double quoted)
+_STRING_LITERAL_RE = re.compile(r"""(['"])([^'"]{20,})\1""")
+
+# False-positive allowlist: strings matching these patterns are not secrets
+# even if high-entropy (UUIDs used as format examples, URL paths, etc.)
+_ENTROPY_ALLOWLIST_RE = re.compile(
+    r"^("
+    r"https?://"  # URLs
+    r"|/[a-z]"  # Unix paths
+    r"|[a-z]+\.[a-z]"  # dotted module paths
+    r"|[A-Z_]{20,}$"  # ALL_CAPS constants / env var names
+    r"|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"  # UUIDs
+    r"|YOUR_|CHANGE_ME|REPLACE|PLACEHOLDER|TODO|FIXME|EXAMPLE|DUMMY|FAKE|TEST"
+    r")",
+    re.IGNORECASE,
 )
 
 # Permission categories that elevate a skill from A to B
@@ -185,6 +250,101 @@ def check_dependency_audit(lockfile_content: str) -> EvalResult:
         check_name="dependency_audit",
         severity="fail",
         message=f"Blocked dependencies found: {', '.join(found)}",
+    )
+
+
+def _shannon_entropy(s: str) -> float:
+    """Calculate Shannon entropy (bits per character) of a string."""
+    if not s:
+        return 0.0
+    length = len(s)
+    freq: dict[str, int] = {}
+    for ch in s:
+        freq[ch] = freq.get(ch, 0) + 1
+    return -sum((c / length) * math.log2(c / length) for c in freq.values())
+
+
+def _find_credential_hits(
+    content: str,
+    source_label: str,
+) -> list[dict]:
+    """Scan content for embedded credentials (known patterns + entropy).
+
+    Returns a list of dicts with keys 'source', 'label', 'line'.
+    """
+    hits: list[dict] = []
+    seen_lines: set[int] = set()  # track line numbers already flagged
+
+    for lineno, line in enumerate(content.splitlines()):
+        # Layer 1: known-format patterns (high confidence, specific label)
+        for pattern, label in _CREDENTIAL_PATTERNS:
+            if re.search(pattern, line):
+                hits.append(
+                    {
+                        "source": source_label,
+                        "label": label,
+                        "line": line.strip()[:200],
+                    }
+                )
+                seen_lines.add(lineno)
+
+        # Layer 2: entropy scan on string literals (catches unknown formats)
+        if lineno not in seen_lines:
+            for match in _STRING_LITERAL_RE.finditer(line):
+                value = match.group(2)
+                if len(value) < _ENTROPY_MIN_LENGTH:
+                    continue
+                if _ENTROPY_ALLOWLIST_RE.search(value):
+                    continue
+                # Charset-aware threshold: hex has lower max entropy
+                threshold = _ENTROPY_THRESHOLD_HEX if _HEX_RE.match(value) else _ENTROPY_THRESHOLD_DEFAULT
+                if _shannon_entropy(value) >= threshold:
+                    hits.append(
+                        {
+                            "source": source_label,
+                            "label": "high-entropy secret",
+                            "line": line.strip()[:200],
+                        }
+                    )
+                    seen_lines.add(lineno)
+                    break  # one hit per line is enough
+
+    return hits
+
+
+def check_embedded_credentials(
+    skill_md_content: str,
+    source_files: list[tuple[str, str]],
+) -> EvalResult:
+    """Scan all skill content for embedded credentials.
+
+    Two detection layers:
+    1. Known-format patterns (AWS keys, GitHub tokens, private keys, etc.)
+    2. Shannon entropy analysis on string literals (catches unknown formats)
+
+    This check always fails when credentials are found — there is no LLM
+    override because embedding real secrets in a skill is never legitimate.
+    """
+    all_hits: list[dict] = []
+
+    all_hits.extend(_find_credential_hits(skill_md_content, "SKILL.md"))
+
+    for filename, content in source_files:
+        all_hits.extend(_find_credential_hits(content, filename))
+
+    if not all_hits:
+        return EvalResult(
+            check_name="embedded_credentials",
+            severity="pass",
+            message="No embedded credentials detected",
+        )
+
+    findings = [f"{h['source']}: {h['label']}" for h in all_hits]
+    return EvalResult(
+        check_name="embedded_credentials",
+        severity="fail",
+        message=f"Embedded credentials detected: {'; '.join(findings)}",
+        details={"hits": all_hits},
     )
 
 
@@ -566,6 +726,8 @@ def run_static_checks(
 
     if lockfile_content is not None:
         results.append(check_dependency_audit(lockfile_content))
+
+    results.append(check_embedded_credentials(skill_md_content, source_files))
 
     results.append(
         check_safety_scan(

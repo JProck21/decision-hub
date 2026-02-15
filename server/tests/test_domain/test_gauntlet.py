@@ -5,7 +5,9 @@ import json
 import pytest
 
 from decision_hub.domain.gauntlet import (
+    _shannon_entropy,
     check_dependency_audit,
+    check_embedded_credentials,
     check_manifest_schema,
     check_prompt_safety,
     check_safety_scan,
@@ -102,6 +104,178 @@ class TestCheckSafetyScan:
         files = [("config.py", 'api_key = "sk-abcdef123456789"\n')]
         result = check_safety_scan(files)
         assert result.passed is False
+
+
+class TestShannonEntropy:
+    """Tests for the Shannon entropy helper."""
+
+    def test_empty_string(self):
+        assert _shannon_entropy("") == 0.0
+
+    def test_single_char_repeated(self):
+        assert _shannon_entropy("aaaaaaa") == 0.0
+
+    def test_low_entropy_word(self):
+        # English words have ~3-4 bits of entropy
+        assert _shannon_entropy("password") < 3.5
+
+    def test_high_entropy_random(self):
+        # Random mixed-case alphanumeric has high entropy
+        assert _shannon_entropy("aB3xK9mP2qR7wL5nJ8vT4") > 4.0
+
+
+class TestCheckEmbeddedCredentials:
+    """Tests for the embedded credentials check."""
+
+    def test_clean_files(self):
+        result = check_embedded_credentials(
+            "---\nname: foo\ndescription: bar\n---\nBody",
+            [("main.py", "def hello():\n    return 'world'\n")],
+        )
+        assert result.passed is True
+        assert result.severity == "pass"
+
+    # --- Layer 1: known-format pattern tests ---
+
+    def test_detects_aws_key_in_source(self):
+        key = "AKI" + "AIOSFODNN7EXAMPLE"
+        files = [("config.py", f'aws_key = "{key}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "AWS access key" in result.message
+
+    def test_detects_github_token_in_source(self):
+        token = "gh" + "p_" + "A" * 36
+        files = [("auth.py", f'token = "{token}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "GitHub token" in result.message
+
+    def test_detects_private_key_in_source(self):
+        files = [("key.pem", "-----BEGIN RSA PRIVATE KEY-----\ndata\n-----END RSA PRIVATE KEY-----\n")]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "private key" in result.message
+
+    def test_detects_stripe_key_in_source(self):
+        key = "sk_live" + "_" + "a" * 24
+        files = [("billing.py", f'stripe_key = "{key}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "Stripe secret key" in result.message
+
+    def test_detects_google_api_key(self):
+        key = "AIza" + "SyA" + "a" * 32
+        files = [("config.py", f'GOOGLE_KEY = "{key}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "Google API key" in result.message
+
+    def test_detects_jwt_token(self):
+        jwt = "eyJ" + "a" * 20 + ".eyJ" + "b" * 20 + "." + "c" * 20
+        files = [("auth.py", f'token = "{jwt}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "JWT token" in result.message
+
+    def test_detects_credential_in_skill_md(self):
+        """Credentials in SKILL.md itself are caught."""
+        key = "AKI" + "AIOSFODNN7EXAMPLE"
+        skill_md = f"---\nname: x\ndescription: y\n---\nUse key: {key}\n"
+        result = check_embedded_credentials(skill_md, [])
+        assert result.passed is False
+        assert "SKILL.md" in result.message
+
+    def test_detects_anthropic_key(self):
+        key = "sk-ant" + "-" + "a" * 40
+        files = [("config.py", f'key = "{key}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "Anthropic API key" in result.message
+
+    def test_detects_slack_token(self):
+        token = "xox" + "b-" + "a" * 20
+        files = [("bot.py", f'SLACK_TOKEN = "{token}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "Slack token" in result.message
+
+    def test_multiple_credentials_all_reported(self):
+        """Multiple credential findings are all included in the message."""
+        aws_key = "AKI" + "AIOSFODNN7EXAMPLE"
+        files = [
+            ("config.py", f'aws = "{aws_key}"\n'),
+            ("key.pem", "-----BEGIN PRIVATE KEY-----\n"),
+        ]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "AWS access key" in result.message
+        assert "private key" in result.message
+
+    def test_not_llm_overridable(self):
+        """Credential check has no LLM callback — always fails on detection."""
+        key = "AKI" + "AIOSFODNN7EXAMPLE"
+        files = [("config.py", f'key = "{key}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.severity == "fail"
+
+    # --- Layer 2: entropy-based detection tests ---
+
+    def test_entropy_catches_unknown_provider_key(self):
+        """A random high-entropy string in a quoted literal is flagged."""
+        # Simulates a credential from a provider we don't have a pattern for
+        secret = "aB3xK9mP2qR7wL5nJ8vT4cY6uF0"
+        files = [("config.py", f'new_provider_key = "{secret}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+        assert "high-entropy secret" in result.message
+
+    def test_entropy_ignores_low_entropy_strings(self):
+        """Repeated/simple strings are not flagged by entropy."""
+        files = [("config.py", 'msg = "aaaaaaaaaabbbbbbbbbbcccccccccc"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is True
+
+    def test_entropy_ignores_urls(self):
+        """URLs are allowlisted even if high-entropy."""
+        files = [("config.py", 'url = "https://api.example.com/v2/xK9mP2qR7wL5nJ8vT4"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is True
+
+    def test_entropy_ignores_placeholder_values(self):
+        """Placeholder strings with known markers are allowlisted."""
+        files = [("config.py", 'key = "YOUR_API_KEY_PLACEHOLDER_HERE_1234"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is True
+
+    def test_entropy_ignores_short_strings(self):
+        """Strings under 20 chars are not scanned for entropy."""
+        files = [("config.py", 'x = "aB3xK9mP2qR7wL5"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is True
+
+    def test_entropy_catches_base64_secret(self):
+        """Base64-encoded secrets have high entropy and are caught."""
+        # This looks like a base64-encoded key from an unknown provider
+        secret = "dGhpcyBpcyBhIHNlY3JldCBrZXkgdGhhdCBpcyB2ZXJ5IHJhbmRvbQ=="
+        files = [("config.py", f'secret = "{secret}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+
+    def test_entropy_catches_hex_secret(self):
+        """Long hex strings have high entropy and are caught."""
+        secret = "4a3b2c1d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+        files = [("config.py", f'hmac_key = "{secret}"\n')]
+        result = check_embedded_credentials("---\nname: x\ndescription: y\n---\n", files)
+        assert result.passed is False
+
+    def test_entropy_in_skill_md(self):
+        """Entropy scanner also runs on SKILL.md content."""
+        secret = "aB3xK9mP2qR7wL5nJ8vT4cY6uF0"
+        skill_md = f'---\nname: x\ndescription: y\n---\nUse key "{secret}" to auth.\n'
+        result = check_embedded_credentials(skill_md, [])
+        assert result.passed is False
+        assert "SKILL.md" in result.message
 
 
 class TestCheckPromptSafety:
@@ -647,8 +821,8 @@ class TestRunStaticChecks:
             source_files=[("main.py", "def hello(): pass\n")],
         )
         assert report.passed is True
-        # manifest + safety, no dep audit
-        assert len(report.results) == 2
+        # manifest + embedded_credentials + safety, no dep audit
+        assert len(report.results) == 3
 
     def test_with_analyze_fn_passes_through(self):
         """run_static_checks forwards analyze_fn to check_safety_scan."""
@@ -719,6 +893,29 @@ class TestRunStaticChecks:
         )
         check_names = [r.check_name for r in report.results]
         assert "prompt_safety" not in check_names
+
+    def test_grade_f_embedded_credentials(self):
+        """Embedded credentials cause grade F regardless of other checks."""
+        aws_key = "AKI" + "AIOSFODNN7EXAMPLE"
+        report = run_static_checks(
+            skill_md_content="---\nname: foo\ndescription: bar\n---\n",
+            lockfile_content=None,
+            source_files=[("config.py", f'key = "{aws_key}"\n')],
+        )
+        assert report.grade == "F"
+        assert not report.passed
+        check_names = [r.check_name for r in report.results]
+        assert "embedded_credentials" in check_names
+
+    def test_embedded_credentials_check_always_runs(self):
+        """The embedded credentials check is always included in results."""
+        report = run_static_checks(
+            skill_md_content="---\nname: foo\ndescription: bar\n---\n",
+            lockfile_content=None,
+            source_files=[("main.py", "def hello(): pass\n")],
+        )
+        check_names = [r.check_name for r in report.results]
+        assert "embedded_credentials" in check_names
 
     def test_summary_includes_grade(self):
         report = run_static_checks(
