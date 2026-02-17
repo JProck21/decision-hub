@@ -124,11 +124,16 @@
   letter-spacing: 1px;
 }
 
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .starBtn {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-left: 8px;
   padding: 6px 12px;
   border-radius: 6px;
   font-family: 'Rajdhani', sans-serif;
