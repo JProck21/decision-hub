@@ -124,6 +124,47 @@
   letter-spacing: 1px;
 }
 
+.githubButtons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.githubBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary) !important;
+  text-shadow: none !important;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.githubBtn:hover {
+  color: var(--neon-cyan) !important;
+  border-color: rgba(0, 240, 255, 0.4);
+  background: rgba(0, 240, 255, 0.05);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
+}
+
+.starBtn:hover {
+  color: #f0d000 !important;
+  border-color: rgba(240, 208, 0, 0.4);
+  background: rgba(240, 208, 0, 0.05);
+  box-shadow: 0 0 10px rgba(240, 208, 0, 0.15);
+}
+
 .menuToggle {
   display: none;
   align-items: center;
@@ -173,6 +214,14 @@
 
   .headerInner {
     position: relative;
+  }
+
+  .githubButtons span {
+    display: none;
+  }
+
+  .githubBtn {
+    padding: 6px;
   }
 
   .footerInner {
