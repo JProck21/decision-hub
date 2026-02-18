@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Package, Building2, Users, Zap, ArrowRight, Download, Star, Bot, Terminal } from "lucide-react";
+import { Package, Building2, Users, Zap, ArrowRight, Download, Star, Bot, Terminal, Tag } from "lucide-react";
 import { getRegistryStats, listSkillsFiltered } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import { useCountUp } from "../hooks/useCountUp";
@@ -11,14 +11,26 @@ import AnimatedTerminal from "../components/AnimatedTerminal";
 import TerminalBlock from "../components/TerminalBlock";
 import styles from "./HomePage.module.css";
 
+const DATA_CATEGORIES = "Data & Database,Data Science & Statistics";
+const HOME_PAGE_SIZE = 6;
+
 export default function HomePage() {
   const { data: stats } = useApi(() => getRegistryStats(), []);
-  const { data: latestSkills } = useApi(
-    () => listSkillsFiltered({ page: 1, pageSize: 6, sort: "updated" }),
+  const { data: categorySkills } = useApi(
+    () => listSkillsFiltered({ page: 1, pageSize: HOME_PAGE_SIZE, sort: "updated", category: DATA_CATEGORIES }),
+    []
+  );
+  const { data: allSkills } = useApi(
+    () => listSkillsFiltered({ page: 1, pageSize: HOME_PAGE_SIZE, sort: "updated" }),
     []
   );
 
-  const topSkills = latestSkills?.items ?? [];
+  // Prefer data/data-science skills; fall back to all skills if not enough
+  const topSkills = useMemo(() => {
+    const catItems = categorySkills?.items ?? [];
+    if (catItems.length >= HOME_PAGE_SIZE) return catItems;
+    return allSkills?.items ?? [];
+  }, [categorySkills, allSkills]);
   const totalSkills = stats?.total_skills ?? 0;
   const totalOrgs = stats?.total_orgs ?? 0;
   const totalPublishers = stats?.total_publishers ?? 0;
@@ -139,6 +151,12 @@ export default function HomePage() {
                       <GradeBadge grade={skill.safety_rating} size="sm" />
                     </div>
                     <h3 className={styles.skillName}>{skill.skill_name}</h3>
+                    {skill.category && (
+                      <div className={styles.skillCategory}>
+                        <Tag size={10} />
+                        {skill.category}
+                      </div>
+                    )}
                     <p className={styles.skillDesc}>{skill.description}</p>
                     <div className={styles.skillMeta}>
                       <span className={styles.skillVersion}>
