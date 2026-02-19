@@ -1450,7 +1450,11 @@ def _build_skills_filters(
     if org_slug:
         base = base.where(organizations_table.c.slug == org_slug)
     if category:
-        base = base.where(skills_table.c.category == category)
+        cats = [c.strip() for c in category.split(",") if c.strip()]
+        if len(cats) == 1:
+            base = base.where(skills_table.c.category == cats[0])
+        else:
+            base = base.where(skills_table.c.category.in_(cats))
     if grade:
         grade_statuses = {
             "A": ["A", "passed"],
