@@ -366,34 +366,124 @@
   line-height: 1.6;
 }
 
-/* How to Install */
-.installSection {
-  margin: 60px 0;
+/* Install CTA */
+.installCta {
+  margin: 60px auto;
+  max-width: 720px;
+  text-align: center;
 }
 
-.installSection .sectionTitle {
-  margin-bottom: 24px;
+.installCta .sectionTitle {
+  margin-bottom: 16px;
+  justify-content: center;
 }
 
-.installGrid {
+.osToggle {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.osTab {
+  padding: 6px 20px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.osTab:not(:last-child) {
+  border-right: 1px solid var(--border-color);
+}
+
+.osTabActive {
+  color: var(--neon-cyan);
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.commandWrapper {
+  position: relative;
+  text-align: left;
+}
+
+.copyBtn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-darkest);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 1;
+}
+
+.copyBtn:hover {
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
+}
+
+.installAlt {
+  margin-top: 14px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.installAlt code {
+  font-family: 'Share Tech Mono', monospace;
+  color: var(--neon-cyan);
+  font-size: 0.85rem;
+}
+
+/* Quick Start Examples */
+.quickStart {
+  margin: 60px auto;
+  max-width: 900px;
+}
+
+.quickStart .sectionTitle {
+  margin-bottom: 20px;
+  justify-content: center;
+}
+
+.examplesGrid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 24px;
+  gap: 20px;
 }
 
-.installStep {
+.exampleCol {
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
-.installLabel {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: var(--neon-pink);
-  letter-spacing: 1px;
-  text-transform: uppercase;
+.exampleCol > *:last-child {
+  flex: 1;
+}
+
+.exampleLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.termOutput {
+  color: var(--neon-cyan);
 }
 
 /* Bottom CTA */
@@ -443,8 +533,8 @@
 
   .skillGrid,
   .stepsGrid,
-  .installGrid,
-  .valuePropGrid {
+  .valuePropGrid,
+  .examplesGrid {
     grid-template-columns: 1fr;
   }
 
@@ -490,7 +580,8 @@
 
   .featured,
   .howItWorks,
-  .installSection {
+  .installCta,
+  .quickStart {
     margin: 32px 0;
   }
 

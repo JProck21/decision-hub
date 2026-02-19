@@ -1,8 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import {
   Package, Building2, Users, Zap, ArrowRight, Download, Star, Bot, Terminal, Tag,
-  ShieldCheck, FlaskConical, Search
+  ShieldCheck, FlaskConical, Search, Copy, Check
 } from "lucide-react";
 import { getRegistryStats, listSkillsFiltered } from "../api/client";
 import { useApi } from "../hooks/useApi";
@@ -16,6 +16,11 @@ import styles from "./HomePage.module.css";
 
 const DATA_CATEGORIES = "Data & Database,Data Science & Statistics";
 const HOME_PAGE_SIZE = 6;
+
+const INSTALL_COMMANDS = {
+  unix: 'curl -LsSf https://astral.sh/uv/install.sh | sh && PATH="$HOME/.local/bin:$PATH" uv tool install dhub-cli',
+  windows: 'irm https://astral.sh/uv/install.ps1 | iex; & "$HOME\\.local\\bin\\uv" tool install dhub-cli',
+} as const;
 
 export default function HomePage() {
   const { data: stats } = useApi(() => getRegistryStats(), []);
@@ -56,6 +61,20 @@ export default function HomePage() {
   const [animatedOrgs, orgsRef] = useCountUp(totalOrgs);
   const [animatedPublishers, publishersRef] = useCountUp(totalPublishers);
   const [animatedDownloads, downloadsRef] = useCountUp(totalDownloads);
+
+  const [osTab, setOsTab] = useState<"unix" | "windows">("unix");
+  const [copied, setCopied] = useState(false);
+
+  const switchOs = useCallback((tab: "unix" | "windows") => {
+    setOsTab(tab);
+    setCopied(false);
+  }, []);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(INSTALL_COMMANDS[osTab]);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [osTab]);
 
   return (
     <div className="container">
@@ -226,23 +245,77 @@ export default function HomePage() {
         </section>
       )}
 
-      {/* How to Install */}
-      <section className={styles.installSection}>
+      {/* Install CTA */}
+      <section className={styles.installCta}>
         <h2 className={styles.sectionTitle}>
           <Terminal size={20} />
-          Get Started in 60 Seconds
+          Install the CLI
         </h2>
-        <div className={styles.installGrid}>
-          <div className={styles.installStep}>
-            <span className={styles.installLabel}>1. Install the CLI</span>
+        <div className={styles.osToggle}>
+          <button
+            className={`${styles.osTab} ${osTab === "unix" ? styles.osTabActive : ""}`}
+            onClick={() => switchOs("unix")}
+          >
+            macOS / Linux
+          </button>
+          <button
+            className={`${styles.osTab} ${osTab === "windows" ? styles.osTabActive : ""}`}
+            onClick={() => switchOs("windows")}
+          >
+            Windows
+          </button>
+        </div>
+        <div className={styles.commandWrapper}>
+          <TerminalBlock title={osTab === "unix" ? "~" : "PowerShell"}>
+            {INSTALL_COMMANDS[osTab]}
+          </TerminalBlock>
+          <button
+            className={styles.copyBtn}
+            onClick={handleCopy}
+            aria-label="Copy to clipboard"
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+        </div>
+        <p className={styles.installAlt}>
+          Already have <code>uv</code>? Just run <code>uv tool install dhub-cli</code>
+        </p>
+      </section>
+
+      {/* Quick Start Examples */}
+      <section className={styles.quickStart}>
+        <h2 className={styles.sectionTitle}>
+          <Zap size={20} />
+          Quick Start
+        </h2>
+        <div className={styles.examplesGrid}>
+          <div className={styles.exampleCol}>
+            <p className={styles.exampleLabel}>Search with natural language</p>
             <TerminalBlock title="~">
-              {`# Install the CLI\nuv tool install dhub-cli\n\n# Login via GitHub\ndhub login`}
+              {'$ dhub ask "analyze data with statistics"\n\n'}
+              <span className={styles.termOutput}>{`Results for: analyze data with statistics
+
+  anthropics/statistical-analysis  v0.1.0  [A]
+  Apply statistical methods to datasets
+
+  anthropics/data-exploration      v0.1.0  [A]
+  Profile and explore datasets
+
+  pymc-labs/pymc-modeling          v0.1.2  [A]
+  Bayesian statistical modeling with PyMC`}</span>
             </TerminalBlock>
           </div>
-          <div className={styles.installStep}>
-            <span className={styles.installLabel}>2. Search and install</span>
+          <div className={styles.exampleCol}>
+            <p className={styles.exampleLabel}>Install in one command</p>
             <TerminalBlock title="~">
-              {`# Ask in plain English\ndhub ask "I need to do Bayesian statistics with PyMC"\n\n# Install to Claude, Cursor, Codex...\ndhub install pymc-labs/pymc-modeling --agent all`}
+              {'$ dhub install anthropics/statistical-analysis --agent all\n\n'}
+              <span className={styles.termOutput}>{`Resolving anthropics/statistical-analysis@latest...
+Downloading anthropics/statistical-analysis@0.1.0...
+
+✓ Installed anthropics/statistical-analysis@0.1.0
+  to ~/.dhub/skills/statistical-analysis
+
+✓ Linked to claude, cursor, codex`}</span>
             </TerminalBlock>
           </div>
         </div>
