@@ -257,8 +257,6 @@ def _publish_skill_from_tracker(
             skill_md_body,
             settings,
             allowed_tools=allowed_tools,
-            # TODO: implement org verification — default to False (conservative)
-            is_verified_org=False,
         )
 
         if not report.passed:

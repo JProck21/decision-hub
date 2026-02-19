@@ -428,32 +428,25 @@ class TestComputeGrade:
             EvalResult(check_name="manifest_schema", severity="pass", message="ok"),
             EvalResult(check_name="safety_scan", severity="pass", message="ok"),
         )
-        assert compute_grade(results, [], is_verified_org=True) == "A"
+        assert compute_grade(results, []) == "A"
 
     def test_grade_b_elevated_permissions(self):
         results = (
             EvalResult(check_name="manifest_schema", severity="pass", message="ok"),
             EvalResult(check_name="safety_scan", severity="pass", message="ok"),
         )
-        assert compute_grade(results, ["shell"], is_verified_org=True) == "B"
-
-    def test_grade_b_unverified_org(self):
-        results = (
-            EvalResult(check_name="manifest_schema", severity="pass", message="ok"),
-            EvalResult(check_name="safety_scan", severity="pass", message="ok"),
-        )
-        assert compute_grade(results, [], is_verified_org=False) == "B"
+        assert compute_grade(results, ["shell"]) == "B"
 
     def test_grade_c_ambiguous(self):
         results = (
             EvalResult(check_name="manifest_schema", severity="pass", message="ok"),
             EvalResult(check_name="safety_scan", severity="warn", message="ambiguous"),
         )
-        assert compute_grade(results, [], is_verified_org=True) == "C"
+        assert compute_grade(results, []) == "C"
 
     def test_grade_f_failed(self):
         results = (EvalResult(check_name="manifest_schema", severity="fail", message="bad"),)
-        assert compute_grade(results, [], is_verified_org=True) == "F"
+        assert compute_grade(results, []) == "F"
 
     def test_grade_f_takes_precedence_over_warn(self):
         """Fail severity overrides warn severity."""
@@ -461,7 +454,7 @@ class TestComputeGrade:
             EvalResult(check_name="manifest_schema", severity="fail", message="bad"),
             EvalResult(check_name="safety_scan", severity="warn", message="ambiguous"),
         )
-        assert compute_grade(results, [], is_verified_org=True) == "F"
+        assert compute_grade(results, []) == "F"
 
 
 class TestParseTestCases:

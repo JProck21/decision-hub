@@ -301,8 +301,6 @@ def _publish_one_skill(
         skill_md_body,
         settings,
         allowed_tools=manifest.allowed_tools,
-        # TODO: implement org verification — default to False (conservative)
-        is_verified_org=False,
     )
 
     if not report.passed:

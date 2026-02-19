@@ -588,20 +588,19 @@ def detect_elevated_permissions(
 def compute_grade(
     results: tuple[EvalResult, ...],
     elevated_permissions: list[str],
-    is_verified_org: bool,
 ) -> SafetyGrade:
     """Compute A/B/C/F grade from check results and context.
 
     F: any check failed
     C: any check warned (ambiguous)
-    B: elevated permissions or unverified org
+    B: elevated permissions
     A: all clear
     """
     if any(r.severity == "fail" for r in results):
         return "F"
     if any(r.severity == "warn" for r in results):
         return "C"
-    if elevated_permissions or not is_verified_org:
+    if elevated_permissions:
         return "B"
     return "A"
 
@@ -707,7 +706,6 @@ def run_static_checks(
     skill_md_body: str = "",
     allowed_tools: str | None = None,
     analyze_prompt_fn: AnalyzePromptFn | None = None,
-    is_verified_org: bool = True,
     review_body_fn: ReviewBodyFn | None = None,
 ) -> GauntletReport:
     """Run all static analysis checks and return a GauntletReport.
@@ -722,7 +720,6 @@ def run_static_checks(
         skill_md_body: The body (system prompt) section of SKILL.md.
         allowed_tools: The allowed_tools field from the manifest.
         analyze_prompt_fn: Optional LLM callback for prompt safety scan.
-        is_verified_org: Whether the publishing org is verified.
     """
     results = [check_manifest_schema(skill_md_content)]
 
@@ -754,14 +751,13 @@ def run_static_checks(
 
     elevated = detect_elevated_permissions(source_files, allowed_tools)
     result_tuple = tuple(results)
-    grade = compute_grade(result_tuple, elevated, is_verified_org)
+    grade = compute_grade(result_tuple, elevated)
 
     from loguru import logger
 
     logger.info(
-        "Gauntlet grading: elevated={} is_verified={} grade={} source_files={}",
+        "Gauntlet grading: elevated={} grade={} source_files={}",
         elevated,
-        is_verified_org,
         grade,
         [name for name, _ in source_files],
     )

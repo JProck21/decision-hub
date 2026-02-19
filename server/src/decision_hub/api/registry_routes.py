@@ -404,8 +404,6 @@ def publish_skill(
         skill_md_body,
         settings,
         allowed_tools=allowed_tools,
-        # TODO: implement org verification — default to False (conservative)
-        is_verified_org=False,
     )
     logger.info(
         "Gauntlet result for {}/{} v{}: grade={} passed={}", org_slug, skill_name, version, report.grade, report.passed
