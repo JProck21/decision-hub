@@ -21,7 +21,7 @@ from decision_hub.domain.tracker_service import (
     process_tracker,
     tracker_to_dict,
 )
-from decision_hub.models import SkillTracker
+from decision_hub.models import SkillTracker, TrackerBatchResult
 
 # Backward-compat aliases used in test names
 _bump_version = bump_version
@@ -189,7 +189,7 @@ class TestProcessTrackerAllFailed:
             created_at=datetime.now(UTC),
         )
 
-    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service.has_new_commits", return_value=(True, "new_sha_xyz"))
     @patch("decision_hub.domain.tracker_service.clone_repo")
     @patch("decision_hub.domain.tracker_service.discover_skills")
@@ -229,7 +229,7 @@ class TestProcessTrackerAllFailed:
             assert kwargs["last_error"] is not None
             assert "S3 outage" in kwargs["last_error"]
 
-    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service.has_new_commits", return_value=(True, "new_sha_xyz"))
     @patch("decision_hub.domain.tracker_service.clone_repo")
     @patch("decision_hub.domain.tracker_service.discover_skills")
@@ -271,7 +271,7 @@ class TestProcessTrackerAllFailed:
             assert kwargs["last_commit_sha"] == "new_sha_xyz"
             assert kwargs["last_error"] is None
 
-    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service.has_new_commits", return_value=(True, "new_sha_xyz"))
     @patch("decision_hub.domain.tracker_service.clone_repo")
     @patch("decision_hub.domain.tracker_service.discover_skills")
@@ -315,7 +315,7 @@ class TestProcessTrackerAllFailed:
 class TestProcessTrackerKnownSha:
     """Verify process_tracker skips REST check when known_sha is provided."""
 
-    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value=None)
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service.clone_repo")
     @patch("decision_hub.domain.tracker_service.discover_skills")
     @patch("decision_hub.infra.storage.create_s3_client")
@@ -376,9 +376,11 @@ class TestCheckAllDueTrackersBatchSize:
         mock_settings.tracker_batch_size = 42
         mock_settings.tracker_jitter_seconds = 120
 
-        check_all_due_trackers(mock_settings)
+        result = check_all_due_trackers(mock_settings)
 
         mock_claim.assert_called_once_with(mock_conn, batch_size=42, jitter_seconds=120)
+        assert isinstance(result, TrackerBatchResult)
+        assert result.checked == 0
 
 
 class TestProcessTrackerTokenResolution:
@@ -530,7 +532,7 @@ class TestDispatchChangedTrackers:
         mock_settings.modal_app_name = "nonexistent-app"
         mock_engine = MagicMock()
 
-        processed, failed = _dispatch_changed_trackers(changed, None, mock_settings, mock_engine)
+        processed, failed = _dispatch_changed_trackers(changed, mock_settings, mock_engine)
 
         assert processed == 1
         assert failed == 0
@@ -547,7 +549,7 @@ class TestDispatchChangedTrackers:
         mock_settings.modal_app_name = "nonexistent-app"
         mock_engine = MagicMock()
 
-        processed, failed = _dispatch_changed_trackers(changed, None, mock_settings, mock_engine)
+        processed, failed = _dispatch_changed_trackers(changed, mock_settings, mock_engine)
 
         assert processed == 0
         assert failed == 1
@@ -556,8 +558,10 @@ class TestDispatchChangedTrackers:
 class TestCheckAllDueTrackersLoopSignal:
     """Verify check_all_due_trackers returns len(trackers) so the caller loop continues."""
 
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service._dispatch_changed_trackers", return_value=(0, 0))
-    @patch("decision_hub.infra.database.update_skill_tracker")
+    @patch("decision_hub.infra.database.batch_clear_tracker_errors")
+    @patch("decision_hub.infra.database.batch_set_tracker_errors")
     @patch("decision_hub.infra.github_client.batch_fetch_commit_shas")
     @patch("decision_hub.infra.github_client.GitHubClient")
     @patch("decision_hub.infra.database.claim_due_trackers")
@@ -568,8 +572,10 @@ class TestCheckAllDueTrackersLoopSignal:
         mock_claim,
         mock_gh_class,
         mock_batch_fetch,
-        mock_update_tracker,
+        mock_batch_set_errors,
+        mock_batch_clear_errors,
         mock_dispatch,
+        _mock_token,
     ):
         """When trackers are due but none changed, should return len(trackers) (not 0).
 
@@ -600,7 +606,10 @@ class TestCheckAllDueTrackersLoopSignal:
         mock_claim.return_value = trackers
 
         # All trackers have the same SHA → no changes
-        mock_batch_fetch.return_value = {f"myorg/repo-{i}:main": f"same_sha_{i}" for i in range(5)}
+        mock_batch_fetch.return_value = (
+            {f"myorg/repo-{i}:main": f"same_sha_{i}" for i in range(5)},
+            set(),
+        )
 
         mock_gh_instance = MagicMock()
         mock_gh_instance.rate_limit_remaining = 4000
@@ -611,12 +620,17 @@ class TestCheckAllDueTrackersLoopSignal:
         mock_settings.tracker_batch_size = 100
         mock_settings.tracker_jitter_seconds = 0
         mock_settings.tracker_rate_limit_floor = 500
-        mock_settings.github_token = "ghp_test"
 
         result = check_all_due_trackers(mock_settings)
 
-        # Must return 5 (number of trackers claimed) so the loop continues
-        assert result == 5
+        # Must return checked=5 (number of trackers claimed) so the loop continues
+        assert isinstance(result, TrackerBatchResult)
+        assert result.checked == 5
+        assert result.unchanged == 5
+        assert result.changed == 0
+        assert result.processed == 0
+        assert result.failed == 0
+        assert result.github_rate_remaining == 4000
         # _dispatch_changed_trackers should be called with an empty list
         mock_dispatch.assert_called_once()
         changed_arg = mock_dispatch.call_args[0][0]
@@ -626,8 +640,11 @@ class TestCheckAllDueTrackersLoopSignal:
 class TestRateLimitGuardrail:
     """Verify check_all_due_trackers skips processing when GitHub rate limit is low."""
 
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service._dispatch_changed_trackers")
-    @patch("decision_hub.infra.database.update_skill_tracker")
+    @patch("decision_hub.infra.database.batch_defer_trackers")
+    @patch("decision_hub.infra.database.batch_clear_tracker_errors")
+    @patch("decision_hub.infra.database.batch_set_tracker_errors")
     @patch("decision_hub.infra.github_client.batch_fetch_commit_shas")
     @patch("decision_hub.infra.github_client.GitHubClient")
     @patch("decision_hub.infra.database.claim_due_trackers")
@@ -638,8 +655,11 @@ class TestRateLimitGuardrail:
         mock_claim,
         mock_gh_class,
         mock_batch_fetch,
-        mock_update_tracker,
+        mock_batch_set_errors,
+        mock_batch_clear_errors,
+        mock_batch_defer,
         mock_dispatch,
+        _mock_token,
     ):
         """When rate_limit_remaining < tracker_rate_limit_floor, dispatch should be skipped."""
         tracker = SkillTracker(
@@ -661,7 +681,7 @@ class TestRateLimitGuardrail:
         mock_create_engine.return_value.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_create_engine.return_value.connect.return_value.__exit__ = MagicMock(return_value=False)
         mock_claim.return_value = [tracker]
-        mock_batch_fetch.return_value = {"myorg/myrepo:main": "new_sha"}
+        mock_batch_fetch.return_value = ({"myorg/myrepo:main": "new_sha"}, set())
 
         # Set rate limit below floor
         mock_gh_instance = MagicMock()
@@ -673,24 +693,29 @@ class TestRateLimitGuardrail:
         mock_settings.tracker_batch_size = 100
         mock_settings.tracker_jitter_seconds = 0
         mock_settings.tracker_rate_limit_floor = 500
-        mock_settings.github_token = "ghp_test"
 
         result = check_all_due_trackers(mock_settings)
 
-        # Should return 0 processed and NOT call _dispatch_changed_trackers
-        assert result == 0
+        # Should return checked>0 but skipped_rate_limit>0, and NOT call _dispatch
+        assert isinstance(result, TrackerBatchResult)
+        assert result.checked == 1
+        assert result.skipped_rate_limit == 1
+        assert result.processed == 0
+        assert result.failed == 0
+        assert result.github_rate_remaining == 100
         mock_dispatch.assert_not_called()
 
-        # Rate-limited trackers should be marked with error and cleared for next tick
-        mock_update_tracker.assert_any_call(
+        # Rate-limited trackers should be deferred via batch function
+        mock_batch_defer.assert_called_once_with(
             mock_conn,
-            tracker.id,
-            last_error="rate_limit: deferred to next tick",
-            next_check_at=None,
+            [tracker.id],
+            "rate_limit: deferred to next tick",
         )
 
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
     @patch("decision_hub.domain.tracker_service._dispatch_changed_trackers", return_value=(1, 0))
-    @patch("decision_hub.infra.database.update_skill_tracker")
+    @patch("decision_hub.infra.database.batch_clear_tracker_errors")
+    @patch("decision_hub.infra.database.batch_set_tracker_errors")
     @patch("decision_hub.infra.github_client.batch_fetch_commit_shas")
     @patch("decision_hub.infra.github_client.GitHubClient")
     @patch("decision_hub.infra.database.claim_due_trackers")
@@ -701,8 +726,10 @@ class TestRateLimitGuardrail:
         mock_claim,
         mock_gh_class,
         mock_batch_fetch,
-        mock_update_tracker,
+        mock_batch_set_errors,
+        mock_batch_clear_errors,
         mock_dispatch,
+        _mock_token,
     ):
         """When rate_limit_remaining >= tracker_rate_limit_floor, dispatch should proceed."""
         tracker = SkillTracker(
@@ -724,7 +751,7 @@ class TestRateLimitGuardrail:
         mock_create_engine.return_value.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_create_engine.return_value.connect.return_value.__exit__ = MagicMock(return_value=False)
         mock_claim.return_value = [tracker]
-        mock_batch_fetch.return_value = {"myorg/myrepo:main": "new_sha"}
+        mock_batch_fetch.return_value = ({"myorg/myrepo:main": "new_sha"}, set())
 
         # Set rate limit above floor
         mock_gh_instance = MagicMock()
@@ -736,9 +763,437 @@ class TestRateLimitGuardrail:
         mock_settings.tracker_batch_size = 100
         mock_settings.tracker_jitter_seconds = 0
         mock_settings.tracker_rate_limit_floor = 500
-        mock_settings.github_token = "ghp_test"
 
         result = check_all_due_trackers(mock_settings)
 
-        assert result == 1
+        assert isinstance(result, TrackerBatchResult)
+        assert result.checked == 1
+        assert result.changed == 1
+        assert result.processed == 1
+        assert result.skipped_rate_limit == 0
         mock_dispatch.assert_called_once()
+
+
+class TestTransientFailureClassification:
+    """Verify transient vs permanent error classification in check_all_due_trackers."""
+
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
+    @patch("decision_hub.domain.tracker_service._dispatch_changed_trackers", return_value=(0, 0))
+    @patch("decision_hub.infra.database.batch_defer_trackers")
+    @patch("decision_hub.infra.database.batch_clear_tracker_errors")
+    @patch("decision_hub.infra.database.batch_set_tracker_errors")
+    @patch("decision_hub.infra.github_client.batch_fetch_commit_shas")
+    @patch("decision_hub.infra.github_client.GitHubClient")
+    @patch("decision_hub.infra.database.claim_due_trackers")
+    @patch("decision_hub.infra.database.create_engine")
+    def test_transient_vs_permanent_errors(
+        self,
+        mock_create_engine,
+        mock_claim,
+        mock_gh_class,
+        mock_batch_fetch,
+        mock_batch_set_errors,
+        mock_batch_clear_errors,
+        mock_batch_defer,
+        mock_dispatch,
+        _mock_token,
+    ):
+        """One tracker in successful chunk (unchanged), one in failed chunk (transient error)."""
+        tracker_ok = SkillTracker(
+            id=uuid4(),
+            user_id=uuid4(),
+            org_slug="myorg",
+            repo_url="https://github.com/myorg/repo-ok",
+            branch="main",
+            enabled=True,
+            poll_interval_minutes=60,
+            last_commit_sha="same_sha",
+            last_checked_at=None,
+            last_published_at=None,
+            last_error=None,
+            created_at=datetime.now(UTC),
+        )
+        tracker_transient = SkillTracker(
+            id=uuid4(),
+            user_id=uuid4(),
+            org_slug="myorg",
+            repo_url="https://github.com/myorg/repo-transient",
+            branch="main",
+            enabled=True,
+            poll_interval_minutes=60,
+            last_commit_sha="old_sha",
+            last_checked_at=None,
+            last_published_at=None,
+            last_error=None,
+            created_at=datetime.now(UTC),
+        )
+        tracker_permanent = SkillTracker(
+            id=uuid4(),
+            user_id=uuid4(),
+            org_slug="myorg",
+            repo_url="https://github.com/myorg/repo-gone",
+            branch="main",
+            enabled=True,
+            poll_interval_minutes=60,
+            last_commit_sha="old_sha",
+            last_checked_at=None,
+            last_published_at=None,
+            last_error=None,
+            created_at=datetime.now(UTC),
+        )
+
+        mock_conn = MagicMock()
+        mock_create_engine.return_value.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_create_engine.return_value.connect.return_value.__exit__ = MagicMock(return_value=False)
+        mock_claim.return_value = [tracker_ok, tracker_transient, tracker_permanent]
+
+        # repo-ok: SHA unchanged; repo-transient: chunk failed; repo-gone: no data
+        mock_batch_fetch.return_value = (
+            {"myorg/repo-ok:main": "same_sha"},
+            {"myorg/repo-transient:main"},  # failed chunk keys
+        )
+
+        mock_gh_instance = MagicMock()
+        mock_gh_instance.rate_limit_remaining = 4000
+        mock_gh_class.return_value.__enter__ = MagicMock(return_value=mock_gh_instance)
+        mock_gh_class.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_settings = MagicMock()
+        mock_settings.tracker_batch_size = 100
+        mock_settings.tracker_jitter_seconds = 0
+        mock_settings.tracker_rate_limit_floor = 500
+
+        result = check_all_due_trackers(mock_settings)
+
+        assert result.checked == 3
+        assert result.unchanged == 1
+        assert result.errored == 2  # transient + permanent both counted
+        assert result.changed == 0
+
+        # Verify batch_set_tracker_errors called with both error types
+        calls = mock_batch_set_errors.call_args_list
+        # Find the permanent error call
+        permanent_call = [c for c in calls if "GraphQL: repo not found" in str(c)]
+        assert len(permanent_call) == 1
+        assert tracker_permanent.id in permanent_call[0][0][1]
+        # Find the transient error call
+        transient_call = [c for c in calls if "transient:" in str(c)]
+        assert len(transient_call) == 1
+        assert tracker_transient.id in transient_call[0][0][1]
+
+        # Unchanged tracker should be cleared
+        mock_batch_clear_errors.assert_called_once()
+        assert tracker_ok.id in mock_batch_clear_errors.call_args[0][1]
+
+
+class TestRepoDeduplication:
+    """Verify that duplicate repos are deduplicated in GraphQL calls."""
+
+    @patch("decision_hub.domain.tracker_service._resolve_github_token", return_value="ghs_test_token")
+    @patch("decision_hub.domain.tracker_service._dispatch_changed_trackers", return_value=(0, 0))
+    @patch("decision_hub.infra.database.batch_clear_tracker_errors")
+    @patch("decision_hub.infra.database.batch_set_tracker_errors")
+    @patch("decision_hub.infra.github_client.batch_fetch_commit_shas")
+    @patch("decision_hub.infra.github_client.GitHubClient")
+    @patch("decision_hub.infra.database.claim_due_trackers")
+    @patch("decision_hub.infra.database.create_engine")
+    def test_three_trackers_same_repo_one_graphql_call(
+        self,
+        mock_create_engine,
+        mock_claim,
+        mock_gh_class,
+        mock_batch_fetch,
+        mock_batch_set_errors,
+        mock_batch_clear_errors,
+        mock_dispatch,
+        _mock_token,
+    ):
+        """3 trackers pointing to same repo/branch → batch_fetch receives only 1 unique repo."""
+        trackers = [
+            SkillTracker(
+                id=uuid4(),
+                user_id=uuid4(),
+                org_slug=f"org{i}",
+                repo_url="https://github.com/myorg/shared-repo",
+                branch="main",
+                enabled=True,
+                poll_interval_minutes=60,
+                last_commit_sha="same_sha",
+                last_checked_at=None,
+                last_published_at=None,
+                last_error=None,
+                created_at=datetime.now(UTC),
+            )
+            for i in range(3)
+        ]
+
+        mock_conn = MagicMock()
+        mock_create_engine.return_value.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_create_engine.return_value.connect.return_value.__exit__ = MagicMock(return_value=False)
+        mock_claim.return_value = trackers
+        mock_batch_fetch.return_value = ({"myorg/shared-repo:main": "same_sha"}, set())
+
+        mock_gh_instance = MagicMock()
+        mock_gh_instance.rate_limit_remaining = 4000
+        mock_gh_class.return_value.__enter__ = MagicMock(return_value=mock_gh_instance)
+        mock_gh_class.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_settings = MagicMock()
+        mock_settings.tracker_batch_size = 100
+        mock_settings.tracker_jitter_seconds = 0
+        mock_settings.tracker_rate_limit_floor = 500
+
+        result = check_all_due_trackers(mock_settings)
+
+        # All 3 trackers should be counted as unchanged
+        assert result.checked == 3
+        assert result.unchanged == 3
+        assert result.changed == 0
+        assert result.errored == 0
+
+        # batch_fetch should receive only 1 unique repo
+        call_args = mock_batch_fetch.call_args[0]
+        repos_arg = call_args[1]
+        assert len(repos_arg) == 1
+        assert repos_arg[0] == ("myorg", "shared-repo", "main")
+
+
+class TestCronLoopBehavior:
+    """Test the cron loop logic from check_trackers in modal_app.py.
+
+    Since check_trackers is a Modal function, we test the loop logic by
+    simulating it with TrackerBatchResult sequences.
+    """
+
+    def _simulate_loop(self, results: list[TrackerBatchResult]) -> dict:
+        """Simulate the check_trackers loop accumulation logic."""
+        total_checked = 0
+        total_due = 0
+        total_unchanged = 0
+        total_changed = 0
+        total_errored = 0
+        total_processed = 0
+        total_failed = 0
+        total_skipped_rate_limit = 0
+        iterations = 0
+
+        for result in results:
+            total_checked += result.checked
+            total_due += result.due
+            total_unchanged += result.unchanged
+            total_changed += result.changed
+            total_errored += result.errored
+            total_processed += result.processed
+            total_failed += result.failed
+            total_skipped_rate_limit += result.skipped_rate_limit
+            iterations += 1
+            if result.checked == 0:
+                break
+            if result.skipped_rate_limit > 0:
+                break
+
+        return {
+            "iterations": iterations,
+            "total_checked": total_checked,
+            "total_due": total_due,
+            "total_unchanged": total_unchanged,
+            "total_changed": total_changed,
+            "total_errored": total_errored,
+            "total_processed": total_processed,
+            "total_failed": total_failed,
+            "total_skipped_rate_limit": total_skipped_rate_limit,
+        }
+
+    def test_loop_stops_when_checked_is_zero(self):
+        """Loop terminates when checked == 0 (no more due trackers)."""
+        results = [
+            TrackerBatchResult(
+                checked=5,
+                due=5,
+                unchanged=5,
+                changed=0,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=4000,
+            ),
+            TrackerBatchResult(
+                checked=3,
+                due=3,
+                unchanged=3,
+                changed=0,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=3900,
+            ),
+            TrackerBatchResult(
+                checked=0,
+                due=0,
+                unchanged=0,
+                changed=0,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=None,
+            ),
+        ]
+        acc = self._simulate_loop(results)
+        assert acc["iterations"] == 3
+        assert acc["total_checked"] == 8
+
+    def test_loop_stops_on_rate_limit(self):
+        """Loop terminates when skipped_rate_limit > 0."""
+        results = [
+            TrackerBatchResult(
+                checked=5,
+                due=5,
+                unchanged=3,
+                changed=2,
+                errored=0,
+                processed=2,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=600,
+            ),
+            TrackerBatchResult(
+                checked=5,
+                due=5,
+                unchanged=2,
+                changed=3,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=3,
+                github_rate_remaining=100,
+            ),
+            # This should never be reached
+            TrackerBatchResult(
+                checked=5,
+                due=5,
+                unchanged=5,
+                changed=0,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=50,
+            ),
+        ]
+        acc = self._simulate_loop(results)
+        assert acc["iterations"] == 2
+        assert acc["total_skipped_rate_limit"] == 3
+
+    def test_metrics_accumulate_across_iterations(self):
+        """Counters sum correctly across multiple iterations."""
+        results = [
+            TrackerBatchResult(
+                checked=10,
+                due=10,
+                unchanged=8,
+                changed=2,
+                errored=0,
+                processed=2,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=4000,
+            ),
+            TrackerBatchResult(
+                checked=10,
+                due=10,
+                unchanged=7,
+                changed=1,
+                errored=2,
+                processed=1,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=3900,
+            ),
+            TrackerBatchResult(
+                checked=0,
+                due=0,
+                unchanged=0,
+                changed=0,
+                errored=0,
+                processed=0,
+                failed=0,
+                skipped_rate_limit=0,
+                github_rate_remaining=None,
+            ),
+        ]
+        acc = self._simulate_loop(results)
+        assert acc["total_checked"] == 20
+        assert acc["total_unchanged"] == 15
+        assert acc["total_changed"] == 3
+        assert acc["total_errored"] == 2
+        assert acc["total_processed"] == 3
+
+
+class TestMetricsMathContract:
+    """Verify invariants: checked == unchanged + changed + errored."""
+
+    def test_basic_contract(self):
+        """checked == unchanged + changed + errored holds."""
+        result = TrackerBatchResult(
+            checked=10,
+            due=10,
+            unchanged=6,
+            changed=3,
+            errored=1,
+            processed=3,
+            failed=0,
+            skipped_rate_limit=0,
+            github_rate_remaining=4000,
+        )
+        assert result.checked == result.unchanged + result.changed + result.errored
+
+    def test_contract_with_transient_errors_in_errored(self):
+        """Transient errors are counted in errored — contract still holds."""
+        # Simulating: 2 permanent + 3 transient = 5 errored
+        result = TrackerBatchResult(
+            checked=20,
+            due=20,
+            unchanged=10,
+            changed=5,
+            errored=5,
+            processed=4,
+            failed=1,
+            skipped_rate_limit=0,
+            github_rate_remaining=3000,
+        )
+        assert result.checked == result.unchanged + result.changed + result.errored
+
+    def test_processed_plus_failed_leq_changed(self):
+        """processed + failed <= changed."""
+        result = TrackerBatchResult(
+            checked=10,
+            due=10,
+            unchanged=5,
+            changed=5,
+            errored=0,
+            processed=3,
+            failed=2,
+            skipped_rate_limit=0,
+            github_rate_remaining=4000,
+        )
+        assert result.processed + result.failed <= result.changed
+
+    def test_rate_limited_skips_all_changed(self):
+        """When rate-limited, skipped_rate_limit == changed and processed == 0."""
+        result = TrackerBatchResult(
+            checked=10,
+            due=10,
+            unchanged=7,
+            changed=3,
+            errored=0,
+            processed=0,
+            failed=0,
+            skipped_rate_limit=3,
+            github_rate_remaining=100,
+        )
+        assert result.skipped_rate_limit == result.changed
+        assert result.processed == 0
+        assert result.checked == result.unchanged + result.changed + result.errored

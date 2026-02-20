@@ -62,7 +62,9 @@ Client-package commands (`uv run --package dhub-cli ...`) can run from anywhere.
 
 ### Quick Reference
 
-Common commands are available via `make`. Run `make help` to see all targets.
+Common commands are available via `make`. Read the `Makefile` to see all targets. **Always read the `Makefile`** for available targets and their exact recipes — do not hardcode or memorize commands that the Makefile already provides.
+
+**Important**: Always run `make` from the **repo root** (where the `Makefile` lives). If your working directory has drifted (e.g. into `server/`), use `make -C /path/to/repo-root <target>` to avoid "No rule to make target" errors.
 
 Install pre-commit hooks once after cloning: `make install-hooks`.
 
@@ -153,24 +155,11 @@ When adding new public endpoints, always add a rate limiter following the existi
 
 ### Linting & Formatting
 
-The project uses **ruff** for linting and formatting, and **mypy** for type checking, both configured in the root `pyproject.toml`. Pre-commit hooks run ruff automatically on every commit (install once with `make install-hooks`). Mypy runs in CI only (not pre-commit).
-
-```bash
-make lint       # check only (CI runs this)
-make typecheck  # mypy type checks (CI runs this)
-make fmt        # auto-fix + format
-```
+The project uses **ruff** for linting and formatting, and **mypy** for type checking, both configured in the root `pyproject.toml`. Pre-commit hooks run ruff automatically on every commit (install once with `make install-hooks`). Mypy runs in CI only (not pre-commit). See `make help` for lint, format, and typecheck targets.
 
 ### Testing
 
-Use `pytest` with fixtures in `conftest.py`. Mock external services (S3, Gemini, Anthropic, Database) in tests.
-
-```bash
-make test              # all tests
-make test-client       # client only
-make test-server       # server only
-make test-frontend     # frontend only
-```
+Use `pytest` with fixtures in `conftest.py`. Mock external services (S3, Gemini, Anthropic, Database) in tests. See `make help` for test targets (all, client, server, frontend).
 
 ### CI
 
@@ -191,12 +180,7 @@ Migrations are tracked SQL files in `server/migrations/`. The runner (`scripts/r
 
 ### Running migrations
 
-```bash
-make migrate-dev     # apply pending migrations to dev
-make migrate-prod    # apply pending migrations to prod (use with care)
-```
-
-Migrations are also applied automatically during deploys (`scripts/deploy.sh`).
+Use the migrate targets from the `Makefile`. Migrations are also applied automatically during deploys (`scripts/deploy.sh`).
 
 ### Creating a new migration
 
@@ -223,7 +207,7 @@ Legacy files use 3-digit numeric prefixes (`001_` through `011_`). Do not add ne
 - **Always update both** the SQL migration file and the SQLAlchemy table definition in `database.py` when changing the schema. CI will catch drift.
 - **Use `IF NOT EXISTS` / `IF EXISTS`** in DDL when possible for idempotency (especially for `CREATE TABLE`, `ADD COLUMN`).
 - **Keep migration PRs focused.** Prefer multiple small PRs over one large one.
-- **Test locally** before pushing: `make check-migrations` validates filenames, `make migrate-dev` applies to dev.
+- **Test locally** before pushing: use the migration-related targets from the `Makefile` to validate filenames and apply to dev.
 - **`created_at` and `updated_at` are managed by PostgreSQL.** `created_at` uses a `DEFAULT now()` server default on insert. `updated_at` is set by a `BEFORE UPDATE` trigger (`set_updated_at()`). Never set either in application code. New mutable tables must include both columns and a `BEFORE UPDATE` trigger for `updated_at`.
 - **Always enable RLS on new tables.** Every `CREATE TABLE` migration must include `ALTER TABLE <name> ENABLE ROW LEVEL SECURITY;`. This blocks Supabase PostgREST (anon/authenticated roles) from querying tables directly — all data access must go through the FastAPI API layer. The backend connects as the table owner, which bypasses RLS automatically.
 
@@ -291,11 +275,7 @@ When reviewing code (PRs, refactors, or when explicitly asked), evaluate these f
 
 #### Release commands
 
-```bash
-make publish-cli                          # patch bump, publish to PyPI
-make publish-cli BUMP=minor               # minor bump, publish to PyPI
-make publish-cli BUMP=major BREAKING=1    # major bump + update MIN_CLI_VERSION + redeploy servers
-```
+Use the `publish-cli` target from the `Makefile`. Supports `BUMP=patch|minor|major` and `BREAKING=1` to sync servers.
 
 #### How it works
 
@@ -305,12 +285,7 @@ Every CLI publish automatically creates a `cli/vX.Y.Z` git tag, and every prod d
 
 ### Deployment
 
-```bash
-make deploy-dev    # build frontend + deploy to dev Modal
-make deploy-prod   # build frontend + deploy to prod Modal
-```
-
-The deploy script builds the React frontend (`frontend/dist/`) and bundles it into the Modal container alongside the server.
+Use the deploy targets from the `Makefile`. The deploy script builds the React frontend (`frontend/dist/`) and bundles it into the Modal container alongside the server.
 
 #### Dev auto-deploy
 
@@ -330,14 +305,7 @@ After implementing significant changes, check whether these need updating:
 
 ## Data Maintenance
 
-Run all backfills (categories, embeddings, org metadata) in one command:
-
-```bash
-make backfill                    # against dev (default)
-DHUB_ENV=prod make backfill      # against prod
-```
-
-Individual backfill scripts can also be run directly from `server/` — see `server/scripts/backfill_categories.py` and `server/src/decision_hub/scripts/backfill_embeddings.py`.
+Use the `backfill` target from the `Makefile` to run all backfills (categories, embeddings, org metadata). Defaults to dev; override with `DHUB_ENV=prod`. Individual backfill scripts can also be run directly from `server/` — see `server/scripts/backfill_categories.py` and `server/src/decision_hub/scripts/backfill_embeddings.py`.
 
 ## Monitoring Trackers
 
@@ -350,6 +318,35 @@ Trackers (`skill_trackers` table) poll GitHub repos for new commits and republis
 - DB table & queries: `server/src/decision_hub/infra/database.py` (search `skill_trackers`)
 - Settings (batch size, jitter, rate-limit floor): `server/src/decision_hub/settings.py` (search `tracker_`)
 
+### GitHub App Authentication
+
+Trackers authenticate to GitHub using **GitHub App installation tokens** instead of a personal access token (PAT). Each cron tick / Modal container mints its own short-lived token (~1 hr) from the App's private key. This gives dev and prod independent 12,500 req/hr rate-limit budgets.
+
+**Apps:**
+- **Dev:** App ID `2887189`, Installation ID `111380021` — secret: `decision-hub-github-app-dev`
+- **Prod:** App ID `2887208`, Installation ID `111379955` — secret: `decision-hub-github-app`
+
+**Modal secrets** store the credentials (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID`). PEM files are at `server/decision-hub-dev.*.pem` / `server/decision-hub.*.pem` (git-ignored).
+
+**Recreating secrets:**
+```bash
+# Dev
+modal secret create decision-hub-github-app-dev --force \
+  GITHUB_APP_ID="2887189" \
+  GITHUB_APP_INSTALLATION_ID="111380021" \
+  GITHUB_APP_PRIVATE_KEY="$(cat server/decision-hub-dev.2026-02-17.private-key.pem)"
+
+# Prod
+modal secret create decision-hub-github-app --force \
+  GITHUB_APP_ID="2887208" \
+  GITHUB_APP_INSTALLATION_ID="111379955" \
+  GITHUB_APP_PRIVATE_KEY="$(cat server/decision-hub.2026-02-17.private-key.pem)"
+```
+
+**Note:** The crawler and backfill scripts still use a PAT passed via `--github-token`. Only the tracker cron uses App tokens.
+
+**Quick health check:** Use the `tracker-health` target from the `Makefile`. Defaults to dev; override with `DHUB_ENV=prod`.
+
 **Check Modal logs for failures:**
 ```bash
 modal app logs decision-hub 2>&1 | grep -i "tracker\|check_trackers"     # prod
@@ -361,6 +358,29 @@ modal app logs decision-hub-dev 2>&1 | grep -i "tracker\|check_trackers"  # dev
 -- Failed trackers
 SELECT repo_url, last_checked_at, last_error
 FROM skill_trackers WHERE last_error IS NOT NULL AND enabled = true;
+```
+
+### Tracker Metrics
+
+The `tracker_metrics` table records one row per `check_trackers` cron tick with key counters for historical observability. Metrics are written at the end of each cron invocation.
+
+**Useful queries:**
+```sql
+-- Recent cron ticks (last 24h)
+SELECT recorded_at, total_checked, trackers_changed, trackers_failed,
+       github_rate_remaining, batch_duration_seconds
+FROM tracker_metrics
+WHERE recorded_at > now() - interval '24 hours'
+ORDER BY recorded_at DESC;
+
+-- Average duration and failure rate over last 7 days
+SELECT date_trunc('day', recorded_at) AS day,
+       count(*) AS ticks,
+       avg(batch_duration_seconds)::numeric(5,1) AS avg_dur_s,
+       sum(trackers_failed) AS total_failed
+FROM tracker_metrics
+WHERE recorded_at > now() - interval '7 days'
+GROUP BY 1 ORDER BY 1 DESC;
 ```
 
 ## Troubleshooting

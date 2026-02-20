@@ -24,7 +24,7 @@ from decision_hub.domain.repo_utils import (
 )
 from decision_hub.domain.skill_manifest import extract_body, extract_description
 from decision_hub.domain.tracker import has_new_commits, parse_github_repo_url
-from decision_hub.models import SkillTracker
+from decision_hub.models import SkillTracker, TrackerBatchResult
 from decision_hub.settings import Settings
 
 # ---------------------------------------------------------------------------
@@ -68,21 +68,30 @@ def dict_to_tracker(d: dict[str, Any]) -> SkillTracker:
 # ---------------------------------------------------------------------------
 
 
-def check_all_due_trackers(settings: Settings) -> int:
-    """Find all due trackers and process them. Returns count of trackers checked.
+def check_all_due_trackers(settings: Settings) -> TrackerBatchResult:
+    """Find all due trackers and process them. Returns structured metrics.
 
-    Returns the number of trackers *claimed* (checked) in this batch —
-    **not** the number that had changes.  The caller loop in ``check_trackers``
-    breaks when this returns 0, meaning no more trackers are due.  Returning
-    ``len(trackers)`` instead of the changed count ensures the loop keeps
-    going through subsequent batches even when one batch has zero changes.
+    The caller loop in ``check_trackers`` breaks when ``result.checked == 0``,
+    meaning no more trackers are due. Returning ``checked=len(trackers)``
+    instead of the changed count ensures the loop keeps going through
+    subsequent batches even when one batch has zero changes.
 
     Uses batch GraphQL to check all claimed trackers for new commits in a
     single API call (per 250 repos), then only clones + republishes those
     that actually changed. Changed trackers are processed via Modal fan-out
     when available, falling back to sequential processing for local dev.
+
+    Deduplicates repos so that N trackers pointing at the same
+    ``(owner, repo, branch)`` produce only 1 GraphQL alias. DB writes
+    are batched (one UPDATE per category) instead of N+1 per-tracker commits.
     """
-    from decision_hub.infra.database import claim_due_trackers, create_engine, update_skill_tracker
+    from decision_hub.infra.database import (
+        batch_clear_tracker_errors,
+        batch_defer_trackers,
+        batch_set_tracker_errors,
+        claim_due_trackers,
+        create_engine,
+    )
     from decision_hub.infra.github_client import GitHubClient, batch_fetch_commit_shas
 
     engine = create_engine(settings.database_url)
@@ -96,45 +105,71 @@ def check_all_due_trackers(settings: Settings) -> int:
 
     if not trackers:
         logger.info("tracker_batch due=0 checked=0 changed=0 failed=0")
-        return 0
+        return TrackerBatchResult(
+            checked=0,
+            due=0,
+            unchanged=0,
+            changed=0,
+            errored=0,
+            processed=0,
+            failed=0,
+            skipped_rate_limit=0,
+            github_rate_remaining=None,
+        )
 
-    # Batch-fetch latest commit SHAs via GraphQL
-    github_token = _resolve_github_token(settings)
-    repos_to_check: list[tuple[str, str, str]] = []
-    for tracker in trackers:
-        owner, repo = parse_github_repo_url(tracker.repo_url)
-        repos_to_check.append((owner, repo, tracker.branch))
-
-    with GitHubClient(token=github_token) as gh:
-        sha_map = batch_fetch_commit_shas(gh, repos_to_check)
-        rate_remaining = gh.rate_limit_remaining
-
-    # Partition: unchanged vs changed vs errored
-    changed_trackers: list[tuple[SkillTracker, str]] = []  # (tracker, current_sha)
-    errored = 0
+    # Build reverse index for deduplication: repo_key -> [tracker, ...]
+    repo_key_to_trackers: dict[str, list[SkillTracker]] = {}
     for tracker in trackers:
         owner, repo = parse_github_repo_url(tracker.repo_url)
         key = f"{owner}/{repo}:{tracker.branch}"
+        repo_key_to_trackers.setdefault(key, []).append(tracker)
+
+    # Deduplicated repo list for GraphQL
+    unique_repos: list[tuple[str, str, str]] = []
+    for key in repo_key_to_trackers:
+        owner_repo, branch = key.rsplit(":", 1)
+        owner, repo = owner_repo.split("/", 1)
+        unique_repos.append((owner, repo, branch))
+
+    # Batch-fetch latest commit SHAs via GraphQL
+    github_token = _resolve_github_token(settings)
+    with GitHubClient(token=github_token) as gh:
+        sha_map, failed_chunk_keys = batch_fetch_commit_shas(gh, unique_repos)
+        rate_remaining = gh.rate_limit_remaining
+
+    # Classify trackers with transient awareness
+    unchanged_ids: list = []
+    errored_ids_transient: list = []
+    errored_ids_permanent: list = []
+    changed_trackers: list[tuple[SkillTracker, str]] = []
+
+    for key, key_trackers in repo_key_to_trackers.items():
+        if key in failed_chunk_keys:
+            # Entire GraphQL chunk failed — transient error, will retry
+            errored_ids_transient.extend(t.id for t in key_trackers)
+            continue
+
         current_sha = sha_map.get(key)
-
         if current_sha is None:
-            # GraphQL failed for this repo — mark error, don't process
-            errored += 1
-            with engine.connect() as conn:
-                update_skill_tracker(conn, tracker.id, last_error="GraphQL: repo not found or inaccessible")
-                conn.commit()
+            # Repo resolved but returned no data — permanent error
+            errored_ids_permanent.extend(t.id for t in key_trackers)
             continue
 
-        if current_sha == tracker.last_commit_sha:
-            # No changes — just clear any previous error
-            with engine.connect() as conn:
-                update_skill_tracker(conn, tracker.id, last_error=None)
-                conn.commit()
-            continue
+        for t in key_trackers:
+            if current_sha == t.last_commit_sha:
+                unchanged_ids.append(t.id)
+            else:
+                changed_trackers.append((t, current_sha))
 
-        changed_trackers.append((tracker, current_sha))
+    errored = len(errored_ids_transient) + len(errored_ids_permanent)
+    unchanged = len(unchanged_ids)
 
-    unchanged = len(trackers) - len(changed_trackers) - errored
+    # Batch DB writes — one UPDATE per category, single commit
+    with engine.connect() as conn:
+        batch_clear_tracker_errors(conn, unchanged_ids)
+        batch_set_tracker_errors(conn, errored_ids_permanent, "GraphQL: repo not found or inaccessible")
+        batch_set_tracker_errors(conn, errored_ids_transient, "transient: GraphQL chunk failed, will retry")
+        conn.commit()
 
     # Rate-limit budget guardrail: skip clone+publish if GitHub budget is low.
     # Changed trackers that aren't processed will be picked up next tick
@@ -149,15 +184,10 @@ def check_all_due_trackers(settings: Settings) -> int:
         # Mark skipped trackers so they don't appear stuck (no SHA, no error).
         # Clear next_check_at so they're immediately due on the next tick
         # rather than waiting the full poll interval.
-        for tracker, _ in changed_trackers:
-            with engine.connect() as conn:
-                update_skill_tracker(
-                    conn,
-                    tracker.id,
-                    last_error="rate_limit: deferred to next tick",
-                    next_check_at=None,
-                )
-                conn.commit()
+        deferred_ids = [t.id for t, _ in changed_trackers]
+        with engine.connect() as conn:
+            batch_defer_trackers(conn, deferred_ids, "rate_limit: deferred to next tick")
+            conn.commit()
         logger.info(
             "tracker_batch due={} unchanged={} changed={} errored={} processed=0 failed=0 skipped_rate_limit={}",
             len(trackers),
@@ -166,10 +196,20 @@ def check_all_due_trackers(settings: Settings) -> int:
             errored,
             len(changed_trackers),
         )
-        return 0
+        return TrackerBatchResult(
+            checked=len(trackers),
+            due=len(trackers),
+            unchanged=unchanged,
+            changed=len(changed_trackers),
+            errored=errored,
+            processed=0,
+            failed=0,
+            skipped_rate_limit=len(changed_trackers),
+            github_rate_remaining=rate_remaining,
+        )
 
     # Dispatch changed trackers (Modal fan-out with sequential fallback)
-    processed, failed = _dispatch_changed_trackers(changed_trackers, github_token, settings, engine)
+    processed, failed = _dispatch_changed_trackers(changed_trackers, settings, engine)
 
     logger.info(
         "tracker_batch due={} unchanged={} changed={} errored={} processed={} failed={}",
@@ -180,18 +220,29 @@ def check_all_due_trackers(settings: Settings) -> int:
         processed,
         failed,
     )
-    return len(trackers)
+    return TrackerBatchResult(
+        checked=len(trackers),
+        due=len(trackers),
+        unchanged=unchanged,
+        changed=len(changed_trackers),
+        errored=errored,
+        processed=processed,
+        failed=failed,
+        skipped_rate_limit=0,
+        github_rate_remaining=rate_remaining,
+    )
 
 
 def _dispatch_changed_trackers(
     changed_trackers: list[tuple[SkillTracker, str]],
-    github_token: str | None,
     settings: Settings,
     engine: Any,
 ) -> tuple[int, int]:
     """Fan out processing of changed trackers via Modal, with sequential fallback.
 
     Returns (processed_count, failed_count).
+    Each Modal container mints its own GitHub App token from environment
+    credentials, so no token passthrough is needed.
     """
     processed = 0
     failed = 0
@@ -206,7 +257,6 @@ def _dispatch_changed_trackers(
         for batch_result in fn.map(
             tracker_dicts,
             known_shas,
-            kwargs={"github_token": github_token},
             return_exceptions=True,
         ):
             if isinstance(batch_result, Exception):
@@ -248,9 +298,11 @@ def _dispatch_changed_trackers(
 def process_tracker_remote(
     tracker_dict: dict[str, Any],
     known_sha: str,
-    github_token: str | None = None,
 ) -> dict[str, Any]:
     """Entry point for Modal containers — creates own settings+engine and processes one tracker.
+
+    Each container has GitHub App credentials in its environment and mints
+    its own installation token via ``_resolve_github_token()``.
 
     Returns a result dict with status, repo_url, and optional error.
     """
@@ -260,10 +312,6 @@ def process_tracker_remote(
 
     settings = create_settings()
     setup_logging(settings.log_level)
-
-    # Override github_token if provided (the system token from the orchestrator)
-    if github_token:
-        object.__setattr__(settings, "github_token", github_token)
 
     tracker = dict_to_tracker(tracker_dict)
     engine = create_engine(settings.database_url)
@@ -629,11 +677,24 @@ def _publish_skill_from_tracker(
     return True
 
 
-def _resolve_github_token(settings: Settings) -> str | None:
-    """Return the system-wide GitHub token for tracker polling.
+def _resolve_github_token(settings: Settings) -> str:
+    """Mint a GitHub App installation token for tracker polling.
 
-    All tracker polling uses the shared system token — per-user tokens
-    added unnecessary complexity with no benefit since trackers are
-    admin-owned background processes.
+    Uses the GitHub App credentials from settings to mint a short-lived
+    installation token (~1 hr). Each cron tick / Modal container mints
+    its own token, so there's no token-sharing across containers.
+
+    Raises if App credentials are not configured.
     """
-    return settings.github_token or None
+    from decision_hub.infra.github_app_token import mint_installation_token
+
+    if not (settings.github_app_id and settings.github_app_private_key and settings.github_app_installation_id):
+        raise RuntimeError(
+            "GitHub App credentials not configured. "
+            "Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID."
+        )
+    return mint_installation_token(
+        settings.github_app_id,
+        settings.github_app_private_key,
+        settings.github_app_installation_id,
+    )
