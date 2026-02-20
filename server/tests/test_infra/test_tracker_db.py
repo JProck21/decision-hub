@@ -27,6 +27,7 @@ def _make_tracker_row(
     user_id: UUID | None = None,
     enabled: bool = True,
     last_error: str | None = None,
+    next_check_at: datetime | None = None,
 ) -> MagicMock:
     """Create a mock row that simulates a skill_trackers row."""
     row = MagicMock()
@@ -41,6 +42,7 @@ def _make_tracker_row(
     row.last_checked_at = None
     row.last_published_at = None
     row.last_error = last_error
+    row.next_check_at = next_check_at
     row.created_at = datetime.now(UTC)
     return row
 
@@ -56,6 +58,13 @@ class TestRowToSkillTracker:
         assert tracker.repo_url == "https://github.com/owner/repo"
         assert tracker.branch == "main"
         assert tracker.enabled is True
+        assert tracker.next_check_at is None
+
+    def test_maps_next_check_at(self):
+        now = datetime.now(UTC)
+        row = _make_tracker_row(next_check_at=now)
+        tracker = _row_to_skill_tracker(row)
+        assert tracker.next_check_at == now
 
 
 class TestInsertSkillTracker:
@@ -174,6 +183,30 @@ class TestClaimDueTrackers:
 
         result = claim_due_trackers(conn, batch_size=100)
         assert result == []
+
+    def test_jitter_adds_random_to_query(self):
+        """When jitter_seconds > 0, the SQL should include random()."""
+        conn = MagicMock()
+        conn.execute.return_value.all.return_value = []
+
+        claim_due_trackers(conn, batch_size=10, jitter_seconds=120)
+
+        conn.execute.assert_called_once()
+        stmt = conn.execute.call_args[0][0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "random()" in compiled
+
+    def test_no_jitter_excludes_random(self):
+        """When jitter_seconds=0, the SQL should NOT include random()."""
+        conn = MagicMock()
+        conn.execute.return_value.all.return_value = []
+
+        claim_due_trackers(conn, batch_size=10, jitter_seconds=0)
+
+        conn.execute.assert_called_once()
+        stmt = conn.execute.call_args[0][0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "random()" not in compiled
 
 
 class TestDeleteSkillTracker:

@@ -4,9 +4,13 @@ Discovers skills in tracked repos and republishes them through the
 full publish pipeline (zip, gauntlet, S3, version record, eval trigger).
 """
 
+from __future__ import annotations
+
+import dataclasses
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -23,34 +27,279 @@ from decision_hub.domain.tracker import has_new_commits, parse_github_repo_url
 from decision_hub.models import SkillTracker
 from decision_hub.settings import Settings
 
+# ---------------------------------------------------------------------------
+# Serialization helpers for Modal transport
+# ---------------------------------------------------------------------------
+
+
+def tracker_to_dict(tracker: SkillTracker) -> dict[str, Any]:
+    """Serialize a frozen SkillTracker dataclass to a plain dict for Modal transport.
+
+    UUID and datetime fields are converted to strings so the dict is JSON-safe.
+    """
+    d = dataclasses.asdict(tracker)
+    for key, value in d.items():
+        if isinstance(value, datetime):
+            d[key] = value.isoformat()
+        elif hasattr(value, "hex"):
+            # UUID → string
+            d[key] = str(value)
+    return d
+
+
+def dict_to_tracker(d: dict[str, Any]) -> SkillTracker:
+    """Deserialize a plain dict back to a SkillTracker dataclass.
+
+    Reverses the string conversions from tracker_to_dict.
+    """
+    from uuid import UUID
+
+    copy = dict(d)
+    copy["id"] = UUID(copy["id"])
+    copy["user_id"] = UUID(copy["user_id"])
+    for dt_field in ("last_checked_at", "last_published_at", "next_check_at", "created_at"):
+        if copy.get(dt_field) is not None:
+            copy[dt_field] = datetime.fromisoformat(copy[dt_field])
+    return SkillTracker(**copy)
+
+
+# ---------------------------------------------------------------------------
+# Main orchestrator
+# ---------------------------------------------------------------------------
+
 
 def check_all_due_trackers(settings: Settings) -> int:
-    """Find all due trackers and process them. Returns count of trackers processed."""
-    from decision_hub.infra.database import claim_due_trackers, create_engine
+    """Find all due trackers and process them. Returns count of trackers checked.
+
+    Returns the number of trackers *claimed* (checked) in this batch —
+    **not** the number that had changes.  The caller loop in ``check_trackers``
+    breaks when this returns 0, meaning no more trackers are due.  Returning
+    ``len(trackers)`` instead of the changed count ensures the loop keeps
+    going through subsequent batches even when one batch has zero changes.
+
+    Uses batch GraphQL to check all claimed trackers for new commits in a
+    single API call (per 250 repos), then only clones + republishes those
+    that actually changed. Changed trackers are processed via Modal fan-out
+    when available, falling back to sequential processing for local dev.
+    """
+    from decision_hub.infra.database import claim_due_trackers, create_engine, update_skill_tracker
+    from decision_hub.infra.github_client import GitHubClient, batch_fetch_commit_shas
 
     engine = create_engine(settings.database_url)
     with engine.connect() as conn:
-        trackers = claim_due_trackers(conn, batch_size=settings.tracker_batch_size)
+        trackers = claim_due_trackers(
+            conn,
+            batch_size=settings.tracker_batch_size,
+            jitter_seconds=settings.tracker_jitter_seconds,
+        )
         conn.commit()
 
-    logger.info("Found {} due tracker(s)", len(trackers))
+    if not trackers:
+        logger.info("tracker_batch due=0 checked=0 changed=0 failed=0")
+        return 0
 
-    processed = 0
+    # Batch-fetch latest commit SHAs via GraphQL
+    github_token = _resolve_github_token(settings)
+    repos_to_check: list[tuple[str, str, str]] = []
     for tracker in trackers:
-        try:
-            process_tracker(tracker, settings, engine)
-            processed += 1
-        except Exception as e:
-            logger.error("Tracker {} failed: {}", tracker.id, e)
+        owner, repo = parse_github_repo_url(tracker.repo_url)
+        repos_to_check.append((owner, repo, tracker.branch))
 
-    return processed
+    with GitHubClient(token=github_token) as gh:
+        sha_map = batch_fetch_commit_shas(gh, repos_to_check)
+        rate_remaining = gh.rate_limit_remaining
+
+    # Partition: unchanged vs changed vs errored
+    changed_trackers: list[tuple[SkillTracker, str]] = []  # (tracker, current_sha)
+    errored = 0
+    for tracker in trackers:
+        owner, repo = parse_github_repo_url(tracker.repo_url)
+        key = f"{owner}/{repo}:{tracker.branch}"
+        current_sha = sha_map.get(key)
+
+        if current_sha is None:
+            # GraphQL failed for this repo — mark error, don't process
+            errored += 1
+            with engine.connect() as conn:
+                update_skill_tracker(conn, tracker.id, last_error="GraphQL: repo not found or inaccessible")
+                conn.commit()
+            continue
+
+        if current_sha == tracker.last_commit_sha:
+            # No changes — just clear any previous error
+            with engine.connect() as conn:
+                update_skill_tracker(conn, tracker.id, last_error=None)
+                conn.commit()
+            continue
+
+        changed_trackers.append((tracker, current_sha))
+
+    unchanged = len(trackers) - len(changed_trackers) - errored
+
+    # Rate-limit budget guardrail: skip clone+publish if GitHub budget is low.
+    # Changed trackers that aren't processed will be picked up next tick
+    # (their next_check_at was already bumped by claim_due_trackers).
+    if rate_remaining < settings.tracker_rate_limit_floor:
+        logger.warning(
+            "GitHub rate limit low ({} < {}), skipping processing of {} changed trackers",
+            rate_remaining,
+            settings.tracker_rate_limit_floor,
+            len(changed_trackers),
+        )
+        # Mark skipped trackers so they don't appear stuck (no SHA, no error).
+        # Clear next_check_at so they're immediately due on the next tick
+        # rather than waiting the full poll interval.
+        for tracker, _ in changed_trackers:
+            with engine.connect() as conn:
+                update_skill_tracker(
+                    conn,
+                    tracker.id,
+                    last_error="rate_limit: deferred to next tick",
+                    next_check_at=None,
+                )
+                conn.commit()
+        logger.info(
+            "tracker_batch due={} unchanged={} changed={} errored={} processed=0 failed=0 skipped_rate_limit={}",
+            len(trackers),
+            unchanged,
+            len(changed_trackers),
+            errored,
+            len(changed_trackers),
+        )
+        return 0
+
+    # Dispatch changed trackers (Modal fan-out with sequential fallback)
+    processed, failed = _dispatch_changed_trackers(changed_trackers, github_token, settings, engine)
+
+    logger.info(
+        "tracker_batch due={} unchanged={} changed={} errored={} processed={} failed={}",
+        len(trackers),
+        unchanged,
+        len(changed_trackers),
+        errored,
+        processed,
+        failed,
+    )
+    return len(trackers)
 
 
-def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
+def _dispatch_changed_trackers(
+    changed_trackers: list[tuple[SkillTracker, str]],
+    github_token: str | None,
+    settings: Settings,
+    engine: Any,
+) -> tuple[int, int]:
+    """Fan out processing of changed trackers via Modal, with sequential fallback.
+
+    Returns (processed_count, failed_count).
+    """
+    processed = 0
+    failed = 0
+
+    try:
+        import modal
+
+        fn = modal.Function.from_name(settings.modal_app_name, "tracker_process_repo")
+        tracker_dicts = [tracker_to_dict(t) for t, _ in changed_trackers]
+        known_shas = [sha for _, sha in changed_trackers]
+
+        for batch_result in fn.map(
+            tracker_dicts,
+            known_shas,
+            kwargs={"github_token": github_token},
+            return_exceptions=True,
+        ):
+            if isinstance(batch_result, Exception):
+                logger.opt(exception=batch_result).error("Modal tracker_process_repo failed")
+                failed += 1
+            else:
+                if batch_result.get("status") == "ok":
+                    processed += 1
+                else:
+                    failed += 1
+                    logger.error(
+                        "tracker_process_repo error: repo={} error={}",
+                        batch_result.get("repo_url", "?"),
+                        batch_result.get("error", "unknown"),
+                    )
+    except Exception as modal_err:
+        # Modal unavailable (local dev, import error, lookup failure) — fall back to sequential
+        logger.info("Modal fan-out unavailable ({}), falling back to sequential processing", modal_err)
+        for tracker, known_sha in changed_trackers:
+            try:
+                process_tracker(tracker, settings, engine, known_sha=known_sha)
+                processed += 1
+            except Exception:
+                logger.opt(exception=True).error(
+                    "tracker_id={} repo={} status=failed",
+                    tracker.id,
+                    tracker.repo_url,
+                )
+                failed += 1
+
+    return processed, failed
+
+
+# ---------------------------------------------------------------------------
+# Remote entry point (runs inside Modal container)
+# ---------------------------------------------------------------------------
+
+
+def process_tracker_remote(
+    tracker_dict: dict[str, Any],
+    known_sha: str,
+    github_token: str | None = None,
+) -> dict[str, Any]:
+    """Entry point for Modal containers — creates own settings+engine and processes one tracker.
+
+    Returns a result dict with status, repo_url, and optional error.
+    """
+    from decision_hub.infra.database import create_engine
+    from decision_hub.logging import setup_logging
+    from decision_hub.settings import create_settings
+
+    settings = create_settings()
+    setup_logging(settings.log_level)
+
+    # Override github_token if provided (the system token from the orchestrator)
+    if github_token:
+        object.__setattr__(settings, "github_token", github_token)
+
+    tracker = dict_to_tracker(tracker_dict)
+    engine = create_engine(settings.database_url)
+
+    try:
+        process_tracker(tracker, settings, engine, known_sha=known_sha)
+        return {"status": "ok", "repo_url": tracker.repo_url, "tracker_id": str(tracker.id)}
+    except Exception as e:
+        logger.opt(exception=True).error(
+            "tracker_id={} repo={} status=failed",
+            tracker.id,
+            tracker.repo_url,
+        )
+        return {"status": "error", "repo_url": tracker.repo_url, "tracker_id": str(tracker.id), "error": str(e)[:500]}
+
+
+# ---------------------------------------------------------------------------
+# Single tracker processing
+# ---------------------------------------------------------------------------
+
+
+def process_tracker(
+    tracker: SkillTracker,
+    settings: Settings,
+    engine: Any,
+    *,
+    known_sha: str | None = None,
+) -> None:
     """Check a single tracker for updates and republish if needed.
 
     This is the main entry point called by the scheduled function.
     On any error, updates last_error on the tracker row.
+
+    When *known_sha* is provided (from batch GraphQL), skips the
+    per-tracker REST commit check — the caller already determined
+    that the repo has new commits.
     """
     from decision_hub.infra.database import update_skill_tracker
     from decision_hub.infra.storage import create_s3_client
@@ -58,33 +307,37 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
     now = datetime.now(UTC)
 
     try:
-        github_token = _resolve_github_token(engine, tracker, settings)
+        github_token = _resolve_github_token(settings)
         owner, repo = parse_github_repo_url(tracker.repo_url)
-        changed, current_sha = has_new_commits(
-            owner,
-            repo,
-            tracker.branch,
-            tracker.last_commit_sha,
-            github_token=github_token,
-        )
 
-        if not changed:
-            with engine.connect() as conn:
-                update_skill_tracker(
-                    conn,
-                    tracker.id,
-                    last_checked_at=now,
-                    last_error=None,
-                )
-                conn.commit()
-            logger.info(
-                "Tracker {}: no changes on {}/{}@{}",
-                tracker.id,
+        if known_sha is not None:
+            # Caller already verified new commits via batch GraphQL
+            current_sha = known_sha
+        else:
+            changed, current_sha = has_new_commits(
                 owner,
                 repo,
                 tracker.branch,
+                tracker.last_commit_sha,
+                github_token=github_token,
             )
-            return
+
+            if not changed:
+                with engine.connect() as conn:
+                    update_skill_tracker(
+                        conn,
+                        tracker.id,
+                        last_checked_at=now,
+                        last_error=None,
+                    )
+                    conn.commit()
+                logger.info(
+                    "tracker_id={} repo={}/{} status=checked",
+                    tracker.id,
+                    owner,
+                    repo,
+                )
+                return
 
         # Clone the repo at the target branch
         repo_root = clone_repo(tracker.repo_url, tracker.branch, github_token=github_token)
@@ -126,9 +379,10 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                 except Exception as e:
                     errors.append(f"{skill_dir.name}: {e}")
                     logger.warning(
-                        "Tracker {}: failed to publish skill from {}: {}",
+                        "tracker_id={} repo={} skill={} status=publish_failed error={}",
                         tracker.id,
-                        skill_dir,
+                        tracker.repo_url,
+                        skill_dir.name,
                         e,
                     )
 
@@ -147,12 +401,11 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                 conn.commit()
 
             logger.info(
-                "Tracker {}: published {} skill(s) from {}/{}@{} (sha={})",
+                "tracker_id={} repo={}/{} status=changed published={} sha={}",
                 tracker.id,
-                published_count,
                 owner,
                 repo,
-                tracker.branch,
+                published_count,
                 current_sha[:8],
             )
 
@@ -160,7 +413,11 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
             shutil.rmtree(repo_root.parent, ignore_errors=True)
 
     except Exception as e:
-        logger.error("Tracker {} failed: {}", tracker.id, e)
+        logger.opt(exception=True).error(
+            "tracker_id={} repo={} status=failed",
+            tracker.id,
+            tracker.repo_url,
+        )
         try:
             with engine.connect() as conn:
                 update_skill_tracker(
@@ -170,8 +427,12 @@ def process_tracker(tracker: SkillTracker, settings: Settings, engine) -> None:
                     last_error=str(e)[:500],
                 )
                 conn.commit()
-        except Exception as inner:
-            logger.error("Failed to update tracker {} error state: {}", tracker.id, inner)
+        except Exception:
+            logger.opt(exception=True).error(
+                "tracker_id={} repo={} status=error_update_failed",
+                tracker.id,
+                tracker.repo_url,
+            )
 
 
 def _publish_skill_from_tracker(
@@ -179,8 +440,8 @@ def _publish_skill_from_tracker(
     org_slug: str,
     tracker: SkillTracker,
     settings: Settings,
-    engine,
-    s3_client,
+    engine: Any,
+    s3_client: Any,
 ) -> bool:
     """Publish a single skill directory through the full pipeline.
 
@@ -193,6 +454,7 @@ def _publish_skill_from_tracker(
     from decision_hub.api.registry_service import (
         maybe_trigger_agent_assessment,
         parse_manifest_from_content,
+        quarantine_and_log_rejection,
         run_gauntlet_pipeline,
     )
     from decision_hub.infra.database import (
@@ -226,7 +488,9 @@ def _publish_skill_from_tracker(
         # Check if latest version already has the same checksum (no changes)
         latest = resolve_latest_version(conn, org_slug, skill_name)
         if latest is not None and latest.checksum == checksum:
-            logger.info("Tracker: no content changes for {}/{}, skipping", org_slug, skill_name)
+            logger.info(
+                "tracker_id={} repo={} skill={}/{} status=unchanged", tracker.id, tracker.repo_url, org_slug, skill_name
+            )
             return False
 
         # Determine version: prefer manifest version_hint if present and higher
@@ -261,23 +525,27 @@ def _publish_skill_from_tracker(
 
         if not report.passed:
             logger.warning(
-                "Tracker: gauntlet rejected {}/{}@{} (grade {})",
+                "tracker_id={} repo={} skill={}/{}@{} status=rejected grade={}",
+                tracker.id,
+                tracker.repo_url,
                 org_slug,
                 skill_name,
                 version,
                 report.grade,
             )
-            insert_audit_log(
+            quarantine_and_log_rejection(
                 conn,
+                s3_client,
+                settings.s3_bucket,
+                zip_data,
                 org_slug=org_slug,
                 skill_name=skill_name,
-                semver=version,
-                grade=report.grade,
+                version=version,
+                report=report,
                 check_results=check_results_dicts,
-                publisher=f"tracker:{tracker.id}",
                 llm_reasoning=llm_reasoning,
+                publisher=f"tracker:{tracker.id}",
             )
-            conn.commit()
             return False
 
         # Upsert skill record
@@ -340,10 +608,19 @@ def _publish_skill_from_tracker(
         )
     except Exception as e:
         # Don't fail the whole publish if eval trigger fails
-        logger.warning("Tracker: eval trigger failed for {}/{}: {}", org_slug, skill_name, e)
+        logger.warning(
+            "tracker_id={} repo={} skill={}/{} status=eval_trigger_failed error={}",
+            tracker.id,
+            tracker.repo_url,
+            org_slug,
+            skill_name,
+            e,
+        )
 
     logger.info(
-        "Tracker: published {}/{}@{} (grade {})",
+        "tracker_id={} repo={} skill={}/{}@{} status=published grade={}",
+        tracker.id,
+        tracker.repo_url,
         org_slug,
         skill_name,
         version,
@@ -352,24 +629,11 @@ def _publish_skill_from_tracker(
     return True
 
 
-def _resolve_github_token(engine, tracker: SkillTracker, settings: Settings) -> str | None:
-    """Resolve the best available GitHub token for a tracker.
+def _resolve_github_token(settings: Settings) -> str | None:
+    """Return the system-wide GitHub token for tracker polling.
 
-    Priority:
-    1. User's stored GITHUB_TOKEN from user_api_keys (decrypted)
-    2. System-wide settings.github_token fallback
-    3. None if neither exists
+    All tracker polling uses the shared system token — per-user tokens
+    added unnecessary complexity with no benefit since trackers are
+    admin-owned background processes.
     """
-    from decision_hub.domain.crypto import decrypt_value
-    from decision_hub.infra.database import get_api_keys_for_eval
-
-    with engine.connect() as conn:
-        keys = get_api_keys_for_eval(conn, tracker.user_id, ["GITHUB_TOKEN"])
-
-    if "GITHUB_TOKEN" in keys:
-        return decrypt_value(keys["GITHUB_TOKEN"], settings.fernet_key)
-
-    if settings.github_token:
-        return settings.github_token
-
-    return None
+    return settings.github_token or None

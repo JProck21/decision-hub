@@ -12,6 +12,7 @@ export interface SkillSummary {
   is_personal_org: boolean;
   category: string;
   source_repo_url: string | null;
+  is_auto_synced: boolean;
 }
 
 export interface PaginatedSkillsResponse {
@@ -79,6 +80,14 @@ export interface AuditLogEntry {
   publisher: string;
   quarantine_s3_key: string | null;
   created_at: string | null;
+}
+
+export interface PaginatedAuditLogResponse {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
 export interface SkillFile {

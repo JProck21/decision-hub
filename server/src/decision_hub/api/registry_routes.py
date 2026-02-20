@@ -5,7 +5,6 @@ import math
 from datetime import UTC, datetime
 from uuid import UUID
 
-import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from loguru import logger
 from pydantic import BaseModel
@@ -57,9 +56,8 @@ from decision_hub.infra.database import (
     insert_skill_access_grant,
     insert_version,
     list_granted_skill_ids,
-    list_skill_access_grants,
+    list_skill_access_grants_with_names,
     list_user_org_ids,
-    organizations_table,
     resolve_latest_version,
     resolve_version,
     update_eval_run_status,
@@ -67,7 +65,6 @@ from decision_hub.infra.database import (
     update_skill_description,
     update_skill_source_repo_url,
     update_skill_visibility,
-    users_table,
 )
 from decision_hub.infra.database import (
     delete_skill as delete_skill_record,
@@ -127,7 +124,29 @@ def _enforce_download_rate_limit(request: Request) -> None:
     state._download_rate_limiter(request)
 
 
+def _enforce_audit_log_rate_limit(request: Request) -> None:
+    """Rate-limit the audit log endpoint."""
+    state = request.app.state
+    if not hasattr(state, "_audit_log_rate_limiter"):
+        settings: Settings = state.settings
+        state._audit_log_rate_limiter = RateLimiter(
+            max_requests=settings.audit_log_rate_limit,
+            window_seconds=settings.audit_log_rate_window,
+        )
+    state._audit_log_rate_limiter(request)
+
+
 _VALID_VISIBILITIES = {"public", "org"}
+
+
+def _resolve_author_display(published_by: str) -> str:
+    """Return a human-friendly author label.
+
+    Tracker-published versions store ``tracker:<uuid>`` — display as "auto-sync".
+    """
+    if published_by.startswith("tracker:"):
+        return "auto-sync"
+    return published_by
 
 
 def _parse_uuid(value: str, name: str) -> UUID:
@@ -202,6 +221,7 @@ class SkillSummary(BaseModel):
     category: str = ""
     visibility: str = "public"
     source_repo_url: str | None = None
+    is_auto_synced: bool = False
 
 
 class PaginatedSkillsResponse(BaseModel):
@@ -228,6 +248,16 @@ class AuditLogResponse(BaseModel):
     publisher: str
     quarantine_s3_key: str | None
     created_at: str | None
+
+
+class PaginatedAuditLogResponse(BaseModel):
+    """Paginated response for the audit log endpoint."""
+
+    items: list[AuditLogResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class EvalCaseResultResponse(BaseModel):
@@ -583,12 +613,13 @@ def list_skills(
             latest_version=row["latest_version"],
             updated_at=row["created_at"].strftime("%Y-%m-%d %H:%M:%S") if row.get("created_at") else "",
             safety_rating=format_trust_score(row["eval_status"]),
-            author=row.get("published_by", ""),
+            author=_resolve_author_display(row.get("published_by", "")),
             download_count=row.get("download_count", 0),
             is_personal_org=row.get("is_personal_org", False),
             category=row.get("category", ""),
             visibility=row.get("visibility", "public"),
             source_repo_url=row.get("source_repo_url"),
+            is_auto_synced=row.get("published_by", "").startswith("tracker:"),
         )
         for row in rows
     ]
@@ -628,12 +659,13 @@ def get_skill_summary(
         latest_version=version.semver,
         updated_at=version.created_at.strftime("%Y-%m-%d %H:%M:%S") if version.created_at else "",
         safety_rating=format_trust_score(version.eval_status),
-        author=version.published_by,
+        author=_resolve_author_display(version.published_by),
         download_count=skill.download_count,
         is_personal_org=org.is_personal if org else False,
         category=skill.category,
         visibility=skill.visibility,
         source_repo_url=skill.source_repo_url,
+        is_auto_synced=version.published_by.startswith("tracker:"),
     )
 
 
@@ -741,22 +773,27 @@ def download_skill(
 
 @public_router.get(
     "/skills/{org_slug}/{skill_name}/audit-log",
-    response_model=list[AuditLogResponse],
+    response_model=PaginatedAuditLogResponse,
+    dependencies=[Depends(_enforce_audit_log_rate_limit)],
 )
 def get_audit_log(
     org_slug: str,
     skill_name: str,
     semver: str | None = Query(None, max_length=50),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     conn: Connection = Depends(get_connection),
     current_user: User | None = Depends(get_current_user_optional),
-) -> list[AuditLogResponse]:
+) -> PaginatedAuditLogResponse:
     """Return evaluation audit log history for a skill."""
     user_org_ids = list_user_org_ids(conn, current_user.id) if current_user else None
     skill = find_skill_by_slug(conn, org_slug, skill_name, user_org_ids=user_org_ids)
     if skill is None:
         raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
-    entries = find_audit_logs(conn, org_slug, skill_name, semver=semver)
-    return [
+    offset = (page - 1) * page_size
+    entries, total = find_audit_logs(conn, org_slug, skill_name, semver=semver, limit=page_size, offset=offset)
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
+    items = [
         AuditLogResponse(
             id=str(entry.id),
             org_slug=entry.org_slug,
@@ -772,6 +809,13 @@ def get_audit_log(
         )
         for entry in entries
     ]
+    return PaginatedAuditLogResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @public_router.get(
@@ -1126,23 +1170,15 @@ def list_access(
     skill = find_skill(conn, org.id, skill_name)
     if skill is None:
         raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found in {org_slug}")
-    grants = list_skill_access_grants(conn, skill.id)
-    results = []
-    for grant in grants:
-        grantee_org_slug_val = conn.execute(
-            sa.select(organizations_table.c.slug).where(organizations_table.c.id == grant.grantee_org_id)
-        ).scalar()
-        granted_by_username = conn.execute(
-            sa.select(users_table.c.username).where(users_table.c.id == grant.granted_by)
-        ).scalar()
-        results.append(
-            AccessGrantListEntry(
-                grantee_org_slug=grantee_org_slug_val or str(grant.grantee_org_id),
-                granted_by=granted_by_username or str(grant.granted_by),
-                created_at=grant.created_at.isoformat() if grant.created_at else None,
-            )
+    grants = list_skill_access_grants_with_names(conn, skill.id)
+    return [
+        AccessGrantListEntry(
+            grantee_org_slug=grantee_slug,
+            granted_by=username,
+            created_at=created_at.isoformat() if created_at else None,
         )
-    return results
+        for grantee_slug, username, created_at in grants
+    ]
 
 
 # ---------------------------------------------------------------------------

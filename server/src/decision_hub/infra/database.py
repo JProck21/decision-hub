@@ -500,6 +500,7 @@ skill_trackers_table = Table(
     Column("last_checked_at", DateTime(timezone=True), nullable=True),
     Column("last_published_at", DateTime(timezone=True), nullable=True),
     Column("last_error", Text, nullable=True),
+    Column("next_check_at", DateTime(timezone=True), nullable=True),
     Column(
         "created_at",
         DateTime(timezone=True),
@@ -708,10 +709,42 @@ def find_org_by_slug(conn: Connection, slug: str) -> Organization | None:
 
 
 def list_all_org_profiles(conn: Connection) -> list[Organization]:
-    """Return all organizations (public listing)."""
-    stmt = sa.select(organizations_table).order_by(organizations_table.c.slug)
+    """Return organizations that have at least one published public skill."""
+    stmt = (
+        sa.select(organizations_table)
+        .where(
+            organizations_table.c.id.in_(
+                sa.select(skills_table.c.org_id)
+                .where(
+                    sa.and_(
+                        skills_table.c.visibility == "public",
+                        skills_table.c.latest_semver.isnot(None),
+                    )
+                )
+                .distinct()
+            )
+        )
+        .order_by(organizations_table.c.slug)
+    )
     rows = conn.execute(stmt).all()
     return [_row_to_organization(row) for row in rows]
+
+
+def org_has_public_skills(conn: Connection, org_id: UUID) -> bool:
+    """Check whether an org has at least one published public skill."""
+    stmt = (
+        sa.select(sa.literal(1))
+        .select_from(skills_table)
+        .where(
+            sa.and_(
+                skills_table.c.org_id == org_id,
+                skills_table.c.visibility == "public",
+                skills_table.c.latest_semver.isnot(None),
+            )
+        )
+        .limit(1)
+    )
+    return conn.execute(stmt).first() is not None
 
 
 def list_user_orgs(conn: Connection, user_id: UUID) -> list[Organization]:
@@ -997,6 +1030,34 @@ def list_skill_access_grants(conn: Connection, skill_id: UUID) -> list[SkillAcce
     )
     rows = conn.execute(stmt).all()
     return [_row_to_skill_access_grant(row) for row in rows]
+
+
+def list_skill_access_grants_with_names(conn: Connection, skill_id: UUID) -> list[tuple[str, str, datetime | None]]:
+    """List access grants with resolved org slug and username in a single query.
+
+    Returns (grantee_org_slug, granted_by_username, created_at) tuples,
+    avoiding per-row lookups (N+1).
+    """
+    stmt = (
+        sa.select(
+            organizations_table.c.slug.label("grantee_org_slug"),
+            users_table.c.username.label("granted_by_username"),
+            skill_access_grants_table.c.created_at,
+        )
+        .select_from(
+            skill_access_grants_table.join(
+                organizations_table,
+                skill_access_grants_table.c.grantee_org_id == organizations_table.c.id,
+            ).join(
+                users_table,
+                skill_access_grants_table.c.granted_by == users_table.c.id,
+            )
+        )
+        .where(skill_access_grants_table.c.skill_id == skill_id)
+        .order_by(skill_access_grants_table.c.created_at)
+    )
+    rows = conn.execute(stmt).all()
+    return [(row.grantee_org_slug, row.granted_by_username, row.created_at) for row in rows]
 
 
 def list_granted_skill_ids(conn: Connection, org_ids: list[UUID]) -> list[UUID]:
@@ -1973,7 +2034,10 @@ def find_audit_logs(
     org_slug: str,
     skill_name: str,
     semver: str | None = None,
-) -> list[AuditLogEntry]:
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> tuple[list[AuditLogEntry], int]:
     """Find audit log entries for a skill, optionally filtered by version.
 
     Args:
@@ -1981,9 +2045,11 @@ def find_audit_logs(
         org_slug: Organization slug.
         skill_name: Skill name.
         semver: Optional version to filter by.
+        limit: Maximum number of rows to return (None = all).
+        offset: Number of rows to skip.
 
     Returns:
-        List of AuditLogEntry records, newest first.
+        Tuple of (entries, total_count) where entries are newest-first.
     """
     conditions = [
         eval_audit_logs_table.c.org_slug == org_slug,
@@ -1992,11 +2058,22 @@ def find_audit_logs(
     if semver is not None:
         conditions.append(eval_audit_logs_table.c.semver == semver)
 
+    where = sa.and_(*conditions)
+
+    count_stmt = sa.select(sa.func.count()).select_from(eval_audit_logs_table).where(where)
+    total = conn.execute(count_stmt).scalar() or 0
+
     stmt = (
-        sa.select(eval_audit_logs_table).where(sa.and_(*conditions)).order_by(eval_audit_logs_table.c.created_at.desc())
+        sa.select(eval_audit_logs_table)
+        .where(where)
+        .order_by(eval_audit_logs_table.c.created_at.desc(), eval_audit_logs_table.c.id.desc())
+        .offset(offset)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
     rows = conn.execute(stmt).all()
-    return [_row_to_audit_log_entry(row) for row in rows]
+    return [_row_to_audit_log_entry(row) for row in rows], total
 
 
 # ---------------------------------------------------------------------------
@@ -2350,6 +2427,7 @@ def _row_to_skill_tracker(row: sa.Row) -> SkillTracker:
         last_checked_at=row.last_checked_at,
         last_published_at=row.last_published_at,
         last_error=row.last_error,
+        next_check_at=row.next_check_at,
         created_at=row.created_at,
     )
 
@@ -2400,7 +2478,12 @@ def list_skill_trackers_for_user(conn: Connection, user_id: UUID) -> list[SkillT
     return [_row_to_skill_tracker(row) for row in rows]
 
 
-def claim_due_trackers(conn: Connection, *, batch_size: int = 100) -> list[SkillTracker]:
+def claim_due_trackers(
+    conn: Connection,
+    *,
+    batch_size: int = 5000,
+    jitter_seconds: int = 0,
+) -> list[SkillTracker]:
     """Atomically claim a batch of due trackers for processing.
 
     Uses SELECT ... FOR UPDATE SKIP LOCKED to prevent concurrent runs
@@ -2411,6 +2494,9 @@ def claim_due_trackers(conn: Connection, *, batch_size: int = 100) -> list[Skill
         batch_size: Maximum number of trackers to claim per invocation.
             Prevents unbounded row locks and keeps processing within
             the DB statement timeout.
+        jitter_seconds: Random jitter window (in seconds) added to
+            next_check_at to spread tracker expirations over time
+            instead of all landing on the same instant.
 
     Returns the claimed SkillTracker objects (with their pre-claim state).
     """
@@ -2418,33 +2504,41 @@ def claim_due_trackers(conn: Connection, *, batch_size: int = 100) -> list[Skill
     due_filter = sa.and_(
         skill_trackers_table.c.enabled.is_(True),
         sa.or_(
-            skill_trackers_table.c.last_checked_at.is_(None),
-            now
-            > (
-                skill_trackers_table.c.last_checked_at
-                + skill_trackers_table.c.poll_interval_minutes * sa.text("INTERVAL '1 minute'")
-            ),
+            skill_trackers_table.c.next_check_at.is_(None),
+            skill_trackers_table.c.next_check_at <= now,
         ),
     )
 
     # Select due tracker IDs with row-level locking, skipping already-locked rows.
     # ORDER BY prioritises never-checked (NULLS FIRST) then most-overdue,
-    # which matches the ix_skill_trackers_due index.
+    # which matches the ix_skill_trackers_next_check index.
     # LIMIT prevents unbounded lock acquisition at scale.
     locked_ids_cte = (
         sa.select(skill_trackers_table.c.id)
         .where(due_filter)
-        .order_by(skill_trackers_table.c.last_checked_at.asc().nulls_first())
+        .order_by(skill_trackers_table.c.next_check_at.asc().nulls_first())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
         .cte("locked_ids")
     )
 
-    # Claim by bumping last_checked_at, returning full rows
+    # Base next_check_at: now + poll_interval
+    base_next = now + skill_trackers_table.c.poll_interval_minutes * sa.text("INTERVAL '1 minute'")
+
+    # Add random jitter to spread expirations across the window
+    if jitter_seconds > 0:
+        next_check = base_next + sa.func.floor(sa.func.random() * jitter_seconds) * sa.text("INTERVAL '1 second'")
+    else:
+        next_check = base_next
+
+    # Claim by bumping last_checked_at and scheduling next check, returning full rows
     update_stmt = (
         sa.update(skill_trackers_table)
         .where(skill_trackers_table.c.id.in_(sa.select(locked_ids_cte.c.id)))
-        .values(last_checked_at=now)
+        .values(
+            last_checked_at=now,
+            next_check_at=next_check,
+        )
         .returning(*skill_trackers_table.c)
     )
     rows = conn.execute(update_stmt).all()
@@ -2462,11 +2556,12 @@ def update_skill_tracker(
     enabled: bool | None = None,
     branch: str | None = None,
     poll_interval_minutes: int | None = None,
+    next_check_at: datetime | None = ...,  # type: ignore[assignment]
 ) -> None:
     """Update tracker fields. Only non-None values are updated.
 
-    last_error uses a sentinel default (...) so that passing
-    last_error=None explicitly clears the error.
+    last_error and next_check_at use a sentinel default (...) so that
+    passing ``=None`` explicitly clears the value.
     """
     values: dict = {}
     if last_commit_sha is not None:
@@ -2483,6 +2578,8 @@ def update_skill_tracker(
         values["branch"] = branch
     if poll_interval_minutes is not None:
         values["poll_interval_minutes"] = poll_interval_minutes
+    if next_check_at is not ...:
+        values["next_check_at"] = next_check_at
 
     if not values:
         return
