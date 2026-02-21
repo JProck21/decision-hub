@@ -51,6 +51,43 @@ TRUSTED_ORGS: frozenset[str] = frozenset(
         "deepmind",
         "google-deepmind",
         "stability-ai",
+        # PyData / scientific Python ecosystem
+        "marimo-team",
+        # Core scientific Python
+        "numpy",
+        "scipy",
+        "pandas-dev",
+        "scikit-learn",
+        "matplotlib",
+        "astropy",
+        # Notebooks & interactive tools
+        "jupyter",
+        "jupyterlab",
+        "ipython",
+        # Visualization
+        "holoviz",
+        "bokeh",
+        "altair-viz",
+        "plotly",
+        # Data apps & dashboards
+        "streamlit",
+        "gradio-app",
+        "evidence-dev",
+        # Data processing & compute
+        "pola-rs",
+        "dask",
+        "ray-project",
+        "duckdb",
+        "apache",
+        # MLOps & experiment tracking
+        "mlflow",
+        "wandb",
+        "prefecthq",
+        "great-expectations",
+        # Deep learning
+        "pytorch",
+        "keras-team",
+        "tensorflow",
     }
 )
 

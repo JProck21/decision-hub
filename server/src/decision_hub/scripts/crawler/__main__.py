@@ -98,6 +98,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=True,
         help="Skip creating trackers for published skills (default: trackers are created)",
     )
+    parser.add_argument(
+        "--trusted-only",
+        action="store_true",
+        default=False,
+        help="Only search TRUSTED_ORGS, skip all other discovery strategies",
+    )
     return parser.parse_args(argv)
 
 
@@ -531,7 +537,8 @@ def run_crawler(args: argparse.Namespace) -> None:
     proc_stats = CrawlStats()
     bot_user_id: str | None = None
 
-    for batch in discover_batches(args.github_token, args.strategies, discovery_stats):
+    strategies = [] if args.trusted_only else args.strategies
+    for batch in discover_batches(args.github_token, strategies, discovery_stats):
         # Merge newly discovered repos into checkpoint
         for full_name, repo in batch.items():
             checkpoint.discovered_repos[full_name] = repo_to_dict(repo)
