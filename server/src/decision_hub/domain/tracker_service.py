@@ -330,6 +330,14 @@ def _dispatch_changed_trackers(
     Each Modal container mints its own GitHub App token from environment
     credentials, so no token passthrough is needed.
 
+    Uses ``fn.map()`` (blocking) instead of ``fn.spawn()`` (fire-and-forget)
+    deliberately — fn.map gives us real processed/failed counts for
+    tracker_metrics, catches silent container failures (OOM, timeout before
+    DB write), and makes errors visible in orchestrator logs.  The downside
+    is that fn.map blocks the thread; the caller guards against this with a
+    reduced loop budget and a pre-dispatch deadline check so we never
+    overrun the hard Modal timeout.
+
     When *deadline* is set (monotonic clock), the function will stop
     consuming ``fn.map`` results once the deadline is within 30 seconds,
     preventing the orchestrator from hitting the hard Modal timeout.
@@ -345,6 +353,9 @@ def _dispatch_changed_trackers(
         tracker_dicts = [tracker_to_dict(t) for t, _ in changed_trackers]
         known_shas = [sha for _, sha in changed_trackers]
 
+        # fn.map blocks until results arrive — see docstring for why this is
+        # preferred over fn.spawn.  The deadline check below breaks early if
+        # the budget runs low.
         for batch_result in fn.map(
             tracker_dicts,
             known_shas,
