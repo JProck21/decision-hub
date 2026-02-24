@@ -27,6 +27,11 @@ from decision_hub.domain.tracker import has_new_commits, parse_github_repo_url
 from decision_hub.models import SkillTracker, TrackerBatchResult
 from decision_hub.settings import Settings
 
+# How close to the deadline we stop accepting new work.  Used by both the
+# outer loop in modal_app.py (via check_all_due_trackers) and the dispatch
+# function to avoid overrunning the hard Modal timeout.
+DEADLINE_BUFFER_SECONDS = 30
+
 # ---------------------------------------------------------------------------
 # Serialization helpers for Modal transport
 # ---------------------------------------------------------------------------
@@ -68,7 +73,7 @@ def dict_to_tracker(d: dict[str, Any]) -> SkillTracker:
 # ---------------------------------------------------------------------------
 
 
-def check_all_due_trackers(settings: Settings) -> TrackerBatchResult:
+def check_all_due_trackers(settings: Settings, *, deadline: float | None = None) -> TrackerBatchResult:
     """Find all due trackers and process them. Returns structured metrics.
 
     The caller loop in ``check_trackers`` breaks when ``result.checked == 0``,
@@ -253,7 +258,7 @@ def check_all_due_trackers(settings: Settings) -> TrackerBatchResult:
         )
 
     # Dispatch changed trackers (Modal fan-out with sequential fallback)
-    processed, failed = _dispatch_changed_trackers(changed_trackers, settings, engine)
+    processed, failed = _dispatch_changed_trackers(changed_trackers, settings, engine, deadline=deadline)
 
     logger.info(
         "tracker_batch due={} unchanged={} changed={} errored={} processed={} failed={}",
@@ -281,13 +286,22 @@ def _dispatch_changed_trackers(
     changed_trackers: list[tuple[SkillTracker, str]],
     settings: Settings,
     engine: Any,
+    *,
+    deadline: float | None = None,
 ) -> tuple[int, int]:
     """Fan out processing of changed trackers via Modal, with sequential fallback.
 
     Returns (processed_count, failed_count).
     Each Modal container mints its own GitHub App token from environment
     credentials, so no token passthrough is needed.
+
+    When *deadline* is set (monotonic clock), the function will stop
+    consuming ``fn.map`` results once the deadline is within 30 seconds,
+    preventing the orchestrator from hitting the hard Modal timeout.
+    Unprocessed trackers will be retried on the next tick.
     """
+    import time
+
     processed = 0
     failed = 0
 
@@ -302,7 +316,11 @@ def _dispatch_changed_trackers(
             tracker_dicts,
             known_shas,
             return_exceptions=True,
+            order_outputs=False,
         ):
+            # Process the already-received result before checking the deadline —
+            # the for-loop already blocked to receive it, so discarding it would
+            # undercount processed/failed.
             if isinstance(batch_result, Exception):
                 logger.opt(exception=batch_result).error("Modal tracker_process_repo failed")
                 failed += 1
@@ -316,10 +334,21 @@ def _dispatch_changed_trackers(
                         batch_result.get("repo_url", "?"),
                         batch_result.get("error", "unknown"),
                     )
+
+            if deadline is not None and time.monotonic() > deadline - DEADLINE_BUFFER_SECONDS:
+                logger.warning(
+                    "Deadline approaching, stopping fn.map consumption after {}/{} results",
+                    processed + failed,
+                    len(changed_trackers),
+                )
+                break
     except Exception as modal_err:
         # Modal unavailable (local dev, import error, lookup failure) — fall back to sequential
         logger.info("Modal fan-out unavailable ({}), falling back to sequential processing", modal_err)
         for tracker, known_sha in changed_trackers:
+            if deadline is not None and time.monotonic() > deadline - DEADLINE_BUFFER_SECONDS:
+                logger.warning("Deadline approaching, stopping sequential processing")
+                break
             try:
                 process_tracker(tracker, settings, engine, known_sha=known_sha)
                 processed += 1
