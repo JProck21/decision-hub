@@ -28,6 +28,8 @@ from decision_hub.domain.skill_manifest import (
 )
 from decision_hub.infra.database import (
     _refresh_skill_latest_version,
+    eval_audit_logs_table,
+    insert_audit_log,
     versions_table,
 )
 from decision_hub.infra.storage import create_s3_client, download_skill_zip
@@ -155,7 +157,11 @@ def regrade_skill(
 
 
 def flush_updates(engine: sa.Engine, results: list[dict]) -> int:
-    """Write new grades + summaries and refresh denormalized skills columns.
+    """Write new grades + summaries, replace audit logs, and refresh skills.
+
+    For each skill: updates the version row, deletes all old audit log
+    entries for that version, inserts a fresh audit log with the new
+    check results, and refreshes the denormalized skills columns.
 
     Returns the number of rows updated.
     """
@@ -165,14 +171,32 @@ def flush_updates(engine: sa.Engine, results: list[dict]) -> int:
 
     with engine.begin() as conn:
         for r in updatable:
+            version_id = UUID(str(r["version_id"]))
+            org_slug, skill_name = r["fqn"].split("/", 1)
+
             conn.execute(
                 versions_table.update()
-                .where(versions_table.c.id == r["version_id"])
+                .where(versions_table.c.id == version_id)
                 .values(
                     eval_status=r["new_grade"],
                     gauntlet_summary=r["new_summary"],
                 )
             )
+
+            # Replace old audit logs for this version with the new result
+            conn.execute(eval_audit_logs_table.delete().where(eval_audit_logs_table.c.version_id == version_id))
+            insert_audit_log(
+                conn,
+                org_slug=org_slug,
+                skill_name=skill_name,
+                semver=r["version"],
+                grade=r["new_grade"],
+                check_results=r.get("check_results_dicts", []),
+                publisher="backfill",
+                version_id=version_id,
+                llm_reasoning=r.get("llm_reasoning"),
+            )
+
             _refresh_skill_latest_version(conn, UUID(str(r["skill_id"])))
 
     return len(updatable)
