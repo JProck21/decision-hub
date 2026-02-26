@@ -9,8 +9,8 @@ help: ## Show this help
 # ---------------------------------------------------------------------------
 
 lint: lint-frontend ## Run all linters (ruff + frontend)
-	uvx ruff check .
-	uvx ruff format --check .
+	uvx ruff@0.15.3 check .
+	uvx ruff@0.15.3 format --check .
 
 typecheck: ## Run mypy type checks
 	uvx mypy client/src/ server/src/ shared/src/
@@ -19,8 +19,8 @@ lint-frontend: ## Run frontend type check + ESLint
 	cd frontend && npx tsc -b && npx eslint .
 
 fmt: ## Auto-fix lint issues and format code
-	uvx ruff check --fix .
-	uvx ruff format .
+	uvx ruff@0.15.3 check --fix .
+	uvx ruff@0.15.3 format .
 
 # ---------------------------------------------------------------------------
 # Testing

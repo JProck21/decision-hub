@@ -536,7 +536,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "dhub-cli"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "client" }
 dependencies = [
     { name = "dhub-core" },
@@ -566,7 +566,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "dhub-core"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "shared" }
 dependencies = [
     { name = "pyyaml" },
