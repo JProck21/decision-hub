@@ -81,7 +81,7 @@ deploy-local: ## Start local stack: Postgres + MinIO + API + frontend
 	@echo ""
 	@echo "=== Starting servers ==="
 	@trap 'kill 0' INT TERM; \
-		(cd server && DHUB_ENV=local uv run --package decision-hub-server uvicorn decision_hub.api.app:create_app --host 0.0.0.0 --port 8000 --reload) & \
+		(cd server && DHUB_ENV=local uv run --package decision-hub-server python -m uvicorn decision_hub.api.app:create_app --host 0.0.0.0 --port 8000 --reload) & \
 		(cd frontend && npm run dev) & \
 		sleep 3; \
 		echo ""; \

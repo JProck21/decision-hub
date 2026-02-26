@@ -46,7 +46,7 @@ DHUB_ENV=dev uv run --package decision-hub-server uvicorn ...  # local dev serve
 
 - **Dev**: `https://hub-dev.decision.ai`, config at `~/.dhub/config.dev.json`, env file `server/.env.dev`
 - **Prod**: `https://hub.decision.ai`, config at `~/.dhub/config.prod.json`, env file `server/.env.prod`
-- **Local**: `http://localhost:5173`, env file `server/.env.local`, infra via `docker-compose-local.yml` (Postgres + MinIO). Requires Docker Desktop. Evals spawn to the deployed dev Modal app.
+- **Local**: `http://localhost:5173`, env file `server/.env.local`, infra via `docker-compose-local.yml` (Postgres + MinIO). Requires Docker Desktop. Evals spawn to the deployed dev Modal app. When asked to deploy locally, run `make deploy-local` in the background (`run_in_background: true`).
 
 **Working directory caveat**: Always run server-package commands from `server/`. The server's `.env.dev` / `.env.prod` files live in `server/` and `pydantic-settings` resolves them relative to the current working directory. Running from the repo root will fail with missing settings errors.
 
