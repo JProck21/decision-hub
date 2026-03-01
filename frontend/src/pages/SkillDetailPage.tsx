@@ -36,6 +36,7 @@ import LoadingSpinner from "../components/LoadingSpinner";
 import EvalReportView from "../components/EvalReportView";
 import FileBrowser from "../components/FileBrowser";
 import { formatCheckName } from "./auditUtils";
+import { LINK_TO_MANIFEST } from "../featureFlags";
 import styles from "./SkillDetailPage.module.css";
 
 type Tab = "overview" | "evals" | "files" | "audit";
@@ -328,7 +329,7 @@ export default function SkillDetailPage() {
                 <div className={styles.sidebarRow}>
                   <span className={styles.sidebarLabel}><Github size={12} /> Source</span>
                   <a
-                    href={skill.manifest_path
+                    href={LINK_TO_MANIFEST && skill.manifest_path
                       ? `${skill.source_repo_url}/blob/main/${skill.manifest_path}`
                       : skill.source_repo_url}
                     target="_blank"
