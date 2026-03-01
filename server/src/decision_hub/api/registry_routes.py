@@ -571,7 +571,7 @@ def get_registry_stats(
     conn: Connection = Depends(get_connection),
 ) -> dict:
     """Return aggregate registry statistics (total skills, orgs, downloads)."""
-    response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["Cache-Control"] = "public, max-age=60"
     return fetch_registry_stats(conn)
 
 
