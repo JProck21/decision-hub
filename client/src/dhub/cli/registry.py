@@ -945,9 +945,12 @@ def _install_from_repo(
         try:
             _install_single_skill(ref, version=version, agent=agent, allow_risky=allow_risky)
             succeeded += 1
-        except typer.Exit:
+        except (typer.Exit, httpx.HTTPStatusError) as exc:
             failed += 1
-            console.print(f"[yellow]Warning: Failed to install {ref}, continuing...[/]")
+            detail = ""
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                detail = " (rate limited)"
+            console.print(f"[yellow]Warning: Failed to install {ref}{detail}, continuing...[/]")
 
     console.print(f"\n[green]Installed {succeeded}/{len(skills)} skills from {repo_ref}[/]")
     if failed:

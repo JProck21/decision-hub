@@ -238,3 +238,42 @@ class TestInstallRepo:
         assert result.exit_code == 0
         assert "Installed 1/2" in result.output
         assert "1 skills failed" in result.output
+
+    @respx.mock
+    @patch("dhub.core.install.verify_checksum")
+    @patch("dhub.core.install.get_dhub_skill_path")
+    @patch("dhub.cli.config.get_optional_token", return_value="test-token")
+    @patch("dhub.cli.config.get_api_url", return_value="http://test:8000")
+    def test_install_repo_continues_on_rate_limit(
+        self,
+        _mock_url,
+        _mock_token,
+        mock_skill_path,
+        mock_checksum,
+        tmp_path: Path,
+    ) -> None:
+        """429 rate limit on one skill doesn't crash the batch."""
+        mock_skill_path.side_effect = lambda org, name: tmp_path / org / name
+        zip_bytes = _make_zip_bytes()
+
+        items = [
+            {"org_slug": "acme", "skill_name": "good-skill", "latest_version": "1.0.0"},
+            {"org_slug": "acme", "skill_name": "limited-skill", "latest_version": "1.0.0"},
+        ]
+        respx.get("http://test:8000/v1/skills/by-repo").mock(
+            return_value=httpx.Response(200, json=_repo_response(items))
+        )
+        respx.get("http://test:8000/v1/resolve/acme/good-skill").mock(
+            return_value=httpx.Response(
+                200,
+                json={"version": "1.0.0", "download_url": "http://test:8000/dl/good.zip", "checksum": "abc"},
+            )
+        )
+        respx.get("http://test:8000/v1/resolve/acme/limited-skill").mock(return_value=httpx.Response(429))
+        respx.get("http://test:8000/dl/good.zip").mock(return_value=httpx.Response(200, content=zip_bytes))
+
+        result = runner.invoke(app, ["install", "--repo", "acme/repo"])
+
+        assert result.exit_code == 0
+        assert "Installed 1/2" in result.output
+        assert "rate limited" in result.output
