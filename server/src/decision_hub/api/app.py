@@ -14,15 +14,11 @@ from decision_hub.infra.database import create_engine
 from decision_hub.infra.storage import create_s3_client
 from decision_hub.logging import RequestLoggingMiddleware, setup_logging
 from decision_hub.settings import create_settings
+from dhub_core.validation import parse_semver as _parse_semver
 
 # Frontend dist directory — populated at deploy time by the build script.
 # When the directory exists the app serves the SPA; otherwise API-only mode.
 _FRONTEND_DIR = Path("/root/frontend_dist")
-
-
-def _parse_semver(v: str) -> tuple[int, ...]:
-    """Parse '1.2.3' into (1, 2, 3) for comparison."""
-    return tuple(int(x) for x in v.split("."))
 
 
 class CLIVersionMiddleware:
@@ -63,7 +59,14 @@ class CLIVersionMiddleware:
 
         # Only enforce version check for CLI requests (those sending the header).
         # Browser / frontend requests don't send the header and should pass through.
-        if client_ver and _parse_semver(client_ver) < self._min_parsed:
+        # Malformed version headers are treated as outdated — return 426 so the
+        # client upgrades to a version that sends a valid semver header.
+        if client_ver:
+            try:
+                client_parsed = _parse_semver(client_ver)
+            except ValueError:
+                client_parsed = (0, 0, 0)
+        if client_ver and client_parsed < self._min_parsed:
             body = _json.dumps(
                 {
                     "detail": (
