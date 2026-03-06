@@ -93,26 +93,34 @@ def parse_skill_md(path: Path) -> SkillManifest:
 def parse_frontmatter_yaml(frontmatter_str: str) -> dict:
     """Parse YAML frontmatter with a fallback for unquoted special characters.
 
-    Descriptions often contain colons which break standard YAML parsing.
-    When yaml.safe_load fails, falls back to line-by-line regex extraction
-    for the top-level scalar fields (name, description), then re-parses
-    the remaining structured blocks.
+    When yaml.safe_load fails, falls back to quoting values that contain
+    markdown links [text](url) or unquoted colons, then retries parsing.
     """
     try:
         return yaml.safe_load(frontmatter_str)
     except yaml.YAMLError:
         pass
 
-    # Fallback: extract fields via regex, quoting problematic values
+    # Fallback: quote values containing markdown links [text](url) which
+    # YAML misinterprets as flow sequences, then retry parsing.
     lines = frontmatter_str.split("\n")
     patched: list[str] = []
     for line in lines:
-        # Match top-level scalar fields whose values contain unquoted colons
-        m = re.match(r"^(name|description):\s*(.+)$", line)
-        if m and ":" in m.group(2):
-            patched.append(f'{m.group(1)}: "{m.group(2)}"')
-        else:
-            patched.append(line)
+        m = re.match(r"^(\s*[\w][\w-]*:\s*)(.+)$", line)
+        if m:
+            value = m.group(2)
+            needs_quoting = (
+                not value.startswith('"')
+                and not value.startswith("'")
+                and not value.startswith(">")
+                and not value.startswith("|")
+                and ("](" in value or (":" in value and not value.startswith("[")))
+            )
+            if needs_quoting:
+                escaped = value.replace('"', '\\"')
+                patched.append(f'{m.group(1)}"{escaped}"')
+                continue
+        patched.append(line)
 
     patched_str = "\n".join(patched)
     return yaml.safe_load(patched_str)
