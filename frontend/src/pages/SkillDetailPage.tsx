@@ -31,11 +31,12 @@ import {
   getEvalReport,
   getAuditLog,
   downloadSkillZip,
+  getSimilarSkills,
 } from "../api/client";
 import { useApi } from "../hooks/useApi";
 import { useSEO } from "../hooks/useSEO";
 import { useRecentlyViewed } from "../hooks/useRecentlyViewed";
-import type { SkillSummary, EvalReport, AuditLogEntry, CheckResult, PaginatedAuditLogResponse, SkillFile } from "../types/api";
+import type { SkillSummary, EvalReport, AuditLogEntry, CheckResult, PaginatedAuditLogResponse, SkillFile, SimilarSkillRef } from "../types/api";
 import NeonCard from "../components/NeonCard";
 import GradeBadge from "../components/GradeBadge";
 import LoadingSpinner from "../components/LoadingSpinner";
@@ -120,6 +121,14 @@ export default function SkillDetailPage() {
     [orgSlug, skillName]
   );
   const auditLog = auditLogResponse?.items ?? [];
+
+  const { data: similarSkills, error: similarError } = useApi<SimilarSkillRef[]>(
+    () =>
+      orgSlug && skillName
+        ? getSimilarSkills(orgSlug, skillName)
+        : Promise.resolve([]),
+    [orgSlug, skillName]
+  );
 
   const seoTitle = `${orgSlug}/${skillName}`;
   const seoDescription = skill
@@ -392,6 +401,40 @@ export default function SkillDetailPage() {
               )}
             </div>
           </NeonCard>
+
+          {similarError && (
+            <NeonCard glow="pink">
+              <p style={{ color: "var(--neon-pink)", fontSize: "var(--text-xs)" }}>
+                Could not load similar skills.
+              </p>
+            </NeonCard>
+          )}
+          {similarSkills && similarSkills.length > 0 && (
+            <NeonCard glow="purple">
+              <div className={styles.similarHeader}>Similar Skills</div>
+              <div className={styles.similarList}>
+                {similarSkills.map((s) => (
+                  <Link
+                    key={`${s.org_slug}/${s.skill_name}`}
+                    to={`/skills/${s.org_slug}/${s.skill_name}`}
+                    className={styles.similarItem}
+                  >
+                    <div className={styles.similarName}>
+                      <GradeBadge grade={s.safety_rating} size="sm" />
+                      <span>{s.org_slug}/{s.skill_name}</span>
+                    </div>
+                    {s.description && (
+                      <p className={styles.similarDesc}>{s.description}</p>
+                    )}
+                    <div className={styles.similarMeta}>
+                      <Download size={11} />
+                      <span>{s.download_count.toLocaleString()} downloads</span>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </NeonCard>
+          )}
         </aside>
       </div>
       )}
