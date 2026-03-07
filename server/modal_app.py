@@ -164,7 +164,7 @@ def crawl_process_repo(
     return process_repo_on_modal(repo_dict, bot_user_id, github_token, set_tracker=set_tracker, force=force)
 
 
-@app.function(image=crawler_image, timeout=300, max_containers=10)
+@app.function(image=crawler_image, timeout=600, max_containers=10)
 def tracker_process_repo(
     tracker_dict: dict,
     known_sha: str,
