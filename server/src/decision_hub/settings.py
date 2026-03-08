@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     # trackers exceeds this threshold, treat all permanent errors as
     # transient (likely systemic GitHub issue, not mass repo deletion).
     tracker_circuit_breaker_ratio: float = 0.5
+    # Hours to skip re-evaluating quarantined content with the same checksum.
+    # Set to 0 to disable (always re-evaluate).
+    tracker_quarantine_skip_hours: int = 24
 
     # Cache TTLs (seconds) for hot read paths. Set to 0 to disable.
     cache_ttl_taxonomy: int = 300  # taxonomy is static — 5 min
