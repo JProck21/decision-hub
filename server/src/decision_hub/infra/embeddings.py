@@ -7,6 +7,7 @@ from loguru import logger
 from sqlalchemy.engine import Connection
 
 from decision_hub.infra.database import update_skill_embedding
+from decision_hub.infra.gemini import gemini_request_with_retry
 from decision_hub.settings import Settings
 
 # Must match the DB column: vector(768) in the migration.
@@ -39,21 +40,27 @@ def embed_query(
     text: str,
     model: str,
     dimensions: int,
+    *,
+    max_retries: int = 3,
 ) -> list[float]:
     """Embed a single search query via Gemini.
+
+    Retries with exponential backoff on transient HTTP errors (403 rate-limit,
+    429, 500, 502, 503) via the shared ``gemini_request_with_retry`` helper.
 
     Args:
         client: Gemini client config dict with api_key and base_url.
         text: The text to embed.
         model: Gemini embedding model name.
         dimensions: Output dimensionality.
+        max_retries: Number of retries on transient errors.
 
     Returns:
         List of floats representing the embedding vector.
 
     Raises:
-        httpx.HTTPStatusError: On non-2xx response.
-        httpx.TimeoutException: On timeout.
+        httpx.HTTPStatusError: On non-2xx, non-retriable response.
+        httpx.TimeoutException: On timeout after all retries exhausted.
     """
     url = f"{client['base_url']}/{model}:embedContent"
     payload = {
@@ -61,18 +68,15 @@ def embed_query(
         "content": {"parts": [{"text": text}]},
         "outputDimensionality": dimensions,
     }
-    params = {"key": client["api_key"]}
-
-    shared = client.get("http_client")
-    if shared is not None:
-        resp = shared.post(url, params=params, json=payload, timeout=10)
-        resp.raise_for_status()
-        return resp.json()["embedding"]["values"]
-
-    with httpx.Client(timeout=10) as http_client:
-        resp = http_client.post(url, params=params, json=payload)
-        resp.raise_for_status()
-        return resp.json()["embedding"]["values"]
+    data = gemini_request_with_retry(
+        client,
+        url,
+        payload,
+        timeout=10,
+        max_retries=max_retries,
+        label="Gemini embedding",
+    )
+    return data["embedding"]["values"]
 
 
 def embed_texts_batch(
