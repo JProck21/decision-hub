@@ -331,19 +331,21 @@
 
 /* Featured */
 .featured {
-  margin: 48px 0;
+  margin: 62px 0 66px;
 }
 
 .sectionHeader {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 24px;
 }
 
 .sectionTitle {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   font-size: var(--text-body);
   color: var(--neon-cyan);
@@ -473,7 +475,6 @@
 
 .quickStart .sectionTitle {
   margin-bottom: 20px;
-  justify-content: center;
 }
 
 .examplesGrid {
@@ -562,9 +563,7 @@
   }
 
   .sectionHeader {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
+    gap: 6px;
   }
 }
 

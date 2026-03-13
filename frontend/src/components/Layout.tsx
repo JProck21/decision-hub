@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { Outlet, Link, useLocation } from "react-router-dom";
-import { Zap, Package, Building2, Home, BookOpen, Menu, X, Star, MessageCircle } from "lucide-react";
+import { Zap, Package, Building2, Home, BookOpen, Menu, X, Star, Search } from "lucide-react";
 import AskModal from "./AskModal";
 import styles from "./Layout.module.css";
 
@@ -66,8 +66,8 @@ export default function Layout() {
                 setMobileMenuState({ isOpen: false, openedOnPath: location.pathname });
               }}
             >
-              <MessageCircle size={16} />
-              <span>Ask</span>
+              <Search size={16} />
+              <span>Search</span>
             </button>
           </nav>
 
