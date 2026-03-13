@@ -231,16 +231,21 @@ describe("HomePage", () => {
     expect(screen.getByText("Just ask")).toBeInTheDocument();
   });
 
-  it("renders Browse Skills and How It Works CTAs", async () => {
+  it("renders Search Skills and How It Works CTAs", async () => {
+    const user = userEvent.setup();
+    const eventHandler = vi.fn();
+    window.addEventListener("open-ask-modal", eventHandler);
+
     renderPage();
 
-    expect(screen.getByText("Browse Skills")).toBeInTheDocument();
-    expect(screen.getByText("How It Works")).toBeInTheDocument();
-
-    const browseLink = screen.getByText("Browse Skills").closest("a");
-    expect(browseLink).toHaveAttribute("href", "/skills");
+    const searchBtn = screen.getByText("Search Skills");
+    expect(searchBtn).toBeInTheDocument();
+    await user.click(searchBtn);
+    expect(eventHandler).toHaveBeenCalledTimes(1);
 
     const howItWorksLink = screen.getByText("How It Works").closest("a");
     expect(howItWorksLink).toHaveAttribute("href", "/how-it-works");
+
+    window.removeEventListener("open-ask-modal", eventHandler);
   });
 });

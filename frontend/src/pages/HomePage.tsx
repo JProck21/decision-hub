@@ -2,7 +2,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { Link } from "react-router-dom";
 import {
   Zap, ArrowRight, Star, Bot, Tag,
-  ShieldCheck, FlaskConical, Search, Copy, Check, Package
+  ShieldCheck, FlaskConical, Search as SearchIcon, Copy, Check, Package
 } from "lucide-react";
 import { getRegistryStats, listSkillsFiltered } from "../api/client";
 import { useApi } from "../hooks/useApi";
@@ -127,11 +127,14 @@ export default function HomePage() {
         </div>
 
         <div className={styles.heroCta}>
-          <Link to="/skills" className={styles.btnPrimary}>
-            <Package size={18} />
-            Browse Skills
+          <button
+            className={styles.btnPrimary}
+            onClick={() => window.dispatchEvent(new CustomEvent("open-ask-modal"))}
+          >
+            <SearchIcon size={18} />
+            Search Skills
             <ArrowRight size={16} />
-          </Link>
+          </button>
           <Link to="/how-it-works" className={styles.btnSecondary}>
             <Zap size={18} />
             How It Works
@@ -187,7 +190,7 @@ export default function HomePage() {
           <NeonCard glow="purple">
             <div className={styles.valueProp}>
               <div className={styles.valuePropIcon}>
-                <Search size={32} />
+                <SearchIcon size={32} />
               </div>
               <h3 className={styles.valuePropTitle}>Conversational Search</h3>
               <p className={styles.valuePropDesc}>
