@@ -15,17 +15,6 @@
   pointer-events: none;
 }
 
-.heroBrand {
-  display: block;
-  font-family: 'Orbitron', sans-serif;
-  font-size: var(--text-xs);
-  color: var(--neon-pink);
-  text-transform: uppercase;
-  letter-spacing: 4px;
-  margin-bottom: 16px;
-  position: relative;
-}
-
 .heroTitle {
   display: flex;
   flex-direction: column;
@@ -570,10 +559,6 @@
 @media (max-width: 480px) {
   .hero {
     padding: 32px 0 24px;
-  }
-
-  .heroBrand {
-    font-size: var(--text-xxs);
   }
 
   .heroLine1,

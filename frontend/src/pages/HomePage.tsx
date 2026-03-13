@@ -89,7 +89,6 @@ export default function HomePage() {
       {/* Hero */}
       <section className={styles.hero}>
         <div className={styles.heroGrid} />
-        <span className={styles.heroBrand}>DECISION // HUB</span>
         <h1 className={styles.heroTitle}>
           <span className={styles.heroLine1}>Your AI agent doesn't know data science.</span>
           <span className={styles.heroLine2}>Give it a skill that does.</span>

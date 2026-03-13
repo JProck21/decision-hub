@@ -48,3 +48,13 @@
 .output {
   color: var(--neon-cyan);
 }
+
+@media (max-width: 480px) {
+  .body {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    font-size: var(--text-xxs);
+    padding: 12px;
+    line-height: 1.5;
+  }
+}
