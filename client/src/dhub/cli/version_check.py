@@ -21,7 +21,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from dhub_core.validation import parse_semver as _parse_semver
+from dhub.core.validation import parse_semver as _parse_semver
 
 logger = logging.getLogger(__name__)
 

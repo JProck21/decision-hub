@@ -6,7 +6,7 @@ since validate_semver and validate_skill_name are defined in dhub_core.
 
 import pytest
 
-from dhub.core.validation import bump_version
+from dhub.core.validation import bump_version, parse_semver
 
 
 class TestBumpVersion:
@@ -38,3 +38,21 @@ class TestBumpVersion:
     def test_bump_version_unknown_level(self) -> None:
         with pytest.raises(ValueError, match="Unknown bump level"):
             bump_version("1.0.0", "micro")
+
+
+class TestParseSemverReexport:
+    """Verify parse_semver is accessible via the dhub.core.validation re-export.
+
+    Full semver logic tests live in shared/tests/test_validation.py.
+    This class only guards the re-export wiring.
+    """
+
+    def test_basic(self) -> None:
+        assert parse_semver("1.2.3") == (1, 2, 3)
+
+    def test_comparison(self) -> None:
+        assert parse_semver("1.0.0") > parse_semver("0.9.0")
+
+    def test_invalid_raises(self) -> None:
+        with pytest.raises(ValueError):
+            parse_semver("not-a-version")
