@@ -8,11 +8,12 @@ from dhub_core.validation import (
     _SKILL_NAME_PATTERN,  # noqa: F401 — re-exported for client tests
     FIRST_VERSION,
     bump_version,
+    parse_semver,
     validate_semver,
     validate_skill_name,
 )
 
-__all__ = ["FIRST_VERSION", "bump_version", "parse_skill_ref", "validate_semver", "validate_skill_name"]
+__all__ = ["FIRST_VERSION", "bump_version", "parse_semver", "parse_skill_ref", "validate_semver", "validate_skill_name"]
 
 
 def parse_skill_ref(skill_ref: str) -> tuple[str, str]:
