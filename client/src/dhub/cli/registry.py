@@ -941,8 +941,15 @@ def _install_single_skill(
     version: str = "latest",
     agent: str | None = None,
     allow_risky: bool = False,
+    _resolved: dict[str, str] | None = None,
 ) -> None:
     """Resolve, download, and extract a single skill.
+
+    Args:
+        _resolved: If provided, skip the resolve API call and use this dict
+            (keys: version, download_url, checksum) directly.  Used by
+            ``_update_single_skill`` / ``_update_all_skills`` to avoid a
+            redundant second resolve request.
 
     Raises typer.Exit on errors.
     """
@@ -951,6 +958,7 @@ def _install_single_skill(
         get_dhub_skill_path,
         link_skill_to_agent,
         link_skill_to_all_agents,
+        save_installed_version,
         verify_checksum,
     )
     from dhub.core.validation import parse_skill_ref
@@ -962,28 +970,33 @@ def _install_single_skill(
         console.print(f"[red]Error: {exc}[/]")
         raise typer.Exit(1) from None
 
-    headers = build_headers(get_optional_token())
-    base_url = get_api_url()
+    if _resolved:
+        resolved_version = _resolved["version"]
+        download_url = _resolved["download_url"]
+        expected_checksum = _resolved["checksum"]
+    else:
+        headers = build_headers(get_optional_token())
+        base_url = get_api_url()
 
-    # Resolve the version to a concrete download URL and checksum
-    resolve_params: dict[str, str] = {"spec": version}
-    if allow_risky:
-        resolve_params["allow_risky"] = "true"
-    with console.status(f"Resolving {org_slug}/{skill_name}@{version}..."), httpx.Client(timeout=60) as client:
-        resp = client.get(
-            f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
-            params=resolve_params,
-            headers=headers,
-        )
-        if resp.status_code == 404:
-            console.print(f"[red]Error: Skill '{skill_ref}' not found.[/]")
-            raise typer.Exit(1)
-        raise_for_status(resp)
-        data = resp.json()
+        # Resolve the version to a concrete download URL and checksum
+        resolve_params: dict[str, str] = {"spec": version}
+        if allow_risky:
+            resolve_params["allow_risky"] = "true"
+        with console.status(f"Resolving {org_slug}/{skill_name}@{version}..."), httpx.Client(timeout=60) as client:
+            resp = client.get(
+                f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
+                params=resolve_params,
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                console.print(f"[red]Error: Skill '{skill_ref}' not found.[/]")
+                raise typer.Exit(1)
+            raise_for_status(resp)
+            data = resp.json()
 
-    resolved_version: str = data["version"]
-    download_url: str = data["download_url"]
-    expected_checksum: str = data["checksum"]
+        resolved_version = data["version"]
+        download_url = data["download_url"]
+        expected_checksum = data["checksum"]
 
     # Download and verify
     with (
@@ -1010,6 +1023,9 @@ def _install_single_skill(
             console.print(f"[red]Error: Refusing to install — {exc}[/]")
             raise typer.Exit(1) from None
         zf.extractall(skill_path)
+
+    # Record the installed version for `dhub update` comparisons
+    save_installed_version(org_slug, skill_name, resolved_version, allow_risky=allow_risky)
 
     from dhub.cli.output import is_json, print_json
 
@@ -1446,6 +1462,163 @@ def uninstall_command(
     console.print(f"[green]Uninstalled {org_slug}/{skill_name}[/]")
     if unlinked:
         console.print(f"[green]Removed symlinks from: {', '.join(unlinked)}[/]")
+
+
+def update_command(
+    skill_ref: str = typer.Argument(None, help="Skill to update (e.g. 'myorg/my-skill'), or omit for --all"),
+    all_skills: bool = typer.Option(False, "--all", "-a", help="Update all locally installed skills"),
+) -> None:
+    """Update installed skills to the latest registry version.
+
+    Either provide a specific skill reference to update one skill, or use
+    --all to check and update every locally installed skill.
+    """
+    if not all_skills and not skill_ref:
+        console.print("[red]Error: Provide a skill reference or use --all.[/]")
+        raise typer.Exit(1)
+    if all_skills and skill_ref:
+        console.print("[red]Error: Cannot use both a skill reference and --all.[/]")
+        raise typer.Exit(1)
+
+    if all_skills:
+        _update_all_skills()
+    else:
+        _update_single_skill(skill_ref)
+
+
+def _update_single_skill(skill_ref: str) -> None:
+    """Check and update a single installed skill."""
+    from dhub.cli.config import build_headers, get_api_url, get_optional_token, raise_for_status
+    from dhub.core.install import get_dhub_skill_path, get_installed_version
+    from dhub.core.validation import parse_skill_ref
+
+    try:
+        org_slug, skill_name = parse_skill_ref(skill_ref)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        raise typer.Exit(1) from None
+
+    # Verify the skill is actually installed locally
+    skill_dir = get_dhub_skill_path(org_slug, skill_name)
+    if not skill_dir.exists():
+        console.print(f"[red]Error: '{skill_ref}' is not installed. Use `dhub install` instead.[/]")
+        raise typer.Exit(1)
+
+    installed = get_installed_version(org_slug, skill_name)
+    installed_version = installed.version if installed else None
+    allow_risky = installed.allow_risky if installed else False
+
+    headers = build_headers(get_optional_token())
+    base_url = get_api_url()
+
+    with httpx.Client(timeout=60) as client:
+        # Quick version check via /latest-version (does NOT inflate download count)
+        resp = client.get(
+            f"{base_url}/v1/skills/{org_slug}/{skill_name}/latest-version",
+            headers=headers,
+        )
+        if resp.status_code == 404:
+            console.print(f"[red]Error: Skill '{skill_ref}' not found in registry.[/]")
+            raise typer.Exit(1)
+        raise_for_status(resp)
+        latest_version = resp.json()["version"]
+
+        if installed_version == latest_version:
+            console.print(f"{org_slug}/{skill_name} is already up to date ({installed_version}).")
+            return
+
+        label = f"{installed_version} → {latest_version}" if installed_version else f"unknown → {latest_version}"
+        console.print(f"Updating {org_slug}/{skill_name}: {label}")
+
+        # Resolve download URL (only when we actually need to download)
+        resolve_params: dict[str, str] = {"spec": "latest"}
+        if allow_risky:
+            resolve_params["allow_risky"] = "true"
+        resp = client.get(
+            f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
+            params=resolve_params,
+            headers=headers,
+        )
+        if resp.status_code == 404:
+            console.print(f"[red]Error: Skill '{skill_ref}' not found in registry.[/]")
+            raise typer.Exit(1)
+        raise_for_status(resp)
+        data = resp.json()
+
+    _install_single_skill(skill_ref, allow_risky=allow_risky, _resolved=data)
+
+
+def _update_all_skills() -> None:
+    """Check and update all locally installed skills."""
+    from dhub.cli.config import build_headers, get_api_url, get_optional_token, raise_for_status
+    from dhub.core.install import get_installed_version, list_installed_skills
+
+    installed_skills = list_installed_skills()
+    if not installed_skills:
+        console.print("No skills installed. Use [bold]dhub install[/] to install skills.")
+        return
+
+    console.print(f"Checking {len(installed_skills)} installed skill(s) for updates...\n")
+
+    headers = build_headers(get_optional_token())
+    base_url = get_api_url()
+
+    updated = 0
+    up_to_date = 0
+    failed = 0
+
+    with httpx.Client(timeout=60) as client:
+        for org_slug, skill_name in installed_skills:
+            installed = get_installed_version(org_slug, skill_name)
+            installed_version = installed.version if installed else None
+            allow_risky = installed.allow_risky if installed else False
+
+            # Quick version check via /latest-version (does NOT inflate download count)
+            try:
+                resp = client.get(
+                    f"{base_url}/v1/skills/{org_slug}/{skill_name}/latest-version",
+                    headers=headers,
+                )
+                if resp.status_code == 404:
+                    console.print(f"[yellow]{org_slug}/{skill_name}: not found in registry (skipped)[/]")
+                    failed += 1
+                    continue
+                raise_for_status(resp)
+                latest_version = resp.json()["version"]
+            except Exception as exc:
+                console.print(f"[red]{org_slug}/{skill_name}: error checking for updates ({exc})[/]")
+                failed += 1
+                continue
+
+            if installed_version == latest_version:
+                console.print(f"  {org_slug}/{skill_name} is up to date ({installed_version})")
+                up_to_date += 1
+                continue
+
+            label = f"{installed_version} → {latest_version}" if installed_version else f"unknown → {latest_version}"
+            console.print(f"  Updating {org_slug}/{skill_name}: {label}")
+
+            try:
+                # Only call /resolve (which increments download count) when we
+                # actually need to download.
+                resolve_params: dict[str, str] = {"spec": "latest"}
+                if allow_risky:
+                    resolve_params["allow_risky"] = "true"
+                resp = client.get(
+                    f"{base_url}/v1/resolve/{org_slug}/{skill_name}",
+                    params=resolve_params,
+                    headers=headers,
+                )
+                raise_for_status(resp)
+                data = resp.json()
+                _install_single_skill(f"{org_slug}/{skill_name}", allow_risky=allow_risky, _resolved=data)
+                updated += 1
+            except (typer.Exit, Exception) as exc:
+                # Catch broadly so one skill failure doesn't abort the batch
+                console.print(f"[red]  Failed to update {org_slug}/{skill_name}: {exc}[/]")
+                failed += 1
+
+    console.print(f"\nDone: [green]{updated} updated[/], {up_to_date} up to date, [red]{failed} failed[/]")
 
 
 def visibility_command(
